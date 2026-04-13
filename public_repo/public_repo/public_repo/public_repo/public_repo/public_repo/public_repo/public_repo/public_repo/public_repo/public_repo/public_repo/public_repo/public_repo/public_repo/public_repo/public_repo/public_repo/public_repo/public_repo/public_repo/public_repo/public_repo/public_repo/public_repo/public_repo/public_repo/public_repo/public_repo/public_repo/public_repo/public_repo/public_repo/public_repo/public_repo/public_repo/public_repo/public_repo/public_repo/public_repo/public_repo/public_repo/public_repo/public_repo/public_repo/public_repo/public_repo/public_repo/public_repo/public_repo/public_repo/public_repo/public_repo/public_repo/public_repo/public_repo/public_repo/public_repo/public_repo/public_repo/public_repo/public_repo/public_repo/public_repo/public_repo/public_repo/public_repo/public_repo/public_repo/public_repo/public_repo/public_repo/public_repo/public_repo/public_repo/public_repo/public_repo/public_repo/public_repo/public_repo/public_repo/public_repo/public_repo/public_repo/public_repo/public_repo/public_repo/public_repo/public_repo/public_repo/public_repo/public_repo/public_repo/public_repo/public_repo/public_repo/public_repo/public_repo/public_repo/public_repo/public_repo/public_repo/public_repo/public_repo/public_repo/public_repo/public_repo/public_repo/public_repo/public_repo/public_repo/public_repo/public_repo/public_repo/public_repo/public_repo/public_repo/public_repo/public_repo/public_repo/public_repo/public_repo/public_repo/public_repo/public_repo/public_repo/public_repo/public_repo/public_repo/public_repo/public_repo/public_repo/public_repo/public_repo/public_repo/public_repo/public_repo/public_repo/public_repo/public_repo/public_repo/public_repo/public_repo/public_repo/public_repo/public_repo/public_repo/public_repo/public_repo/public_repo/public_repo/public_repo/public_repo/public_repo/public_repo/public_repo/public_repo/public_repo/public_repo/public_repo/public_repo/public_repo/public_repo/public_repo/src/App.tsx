@@ -174,7 +174,7 @@ export default function App() {
         />
         <Route
           path="/upload"
-          element={isAuthenticated ? <Layout user={effectiveUser}><UploadQuestion user={effectiveUser} /></Layout> : <Navigate to="/login" />}
+          element={isAuthenticated ? <Layout user={effectiveUser}><UploadQuestion /></Layout> : <Navigate to="/login" />}
         />
         <Route
           path="/generate"
@@ -194,19 +194,19 @@ export default function App() {
         />
         <Route
           path="/knowledge"
-          element={isAuthenticated ? <Layout user={effectiveUser}><KnowledgeBase user={effectiveUser} /></Layout> : <Navigate to="/login" />}
+          element={isAuthenticated ? <Layout user={effectiveUser}><KnowledgeBase /></Layout> : <Navigate to="/login" />}
         />
         <Route
           path="/knowledge/level/:level"
-          element={isAuthenticated ? <Layout user={effectiveUser}><KnowledgeLevelPage user={effectiveUser} /></Layout> : <Navigate to="/login" />}
+          element={isAuthenticated ? <Layout user={effectiveUser}><KnowledgeLevelPage /></Layout> : <Navigate to="/login" />}
         />
         <Route
           path="/knowledge/summary"
-          element={isAuthenticated ? <Layout user={effectiveUser}><KnowledgeSummary user={effectiveUser} /></Layout> : <Navigate to="/login" />}
+          element={isAuthenticated ? <Layout user={effectiveUser}><KnowledgeSummary /></Layout> : <Navigate to="/login" />}
         />
         <Route
           path="/answer/:level"
-          element={isAuthenticated ? <Layout user={effectiveUser}><AnswerPage user={effectiveUser} /></Layout> : <Navigate to="/login" />}
+          element={isAuthenticated ? <Layout user={effectiveUser}><AnswerPage /></Layout> : <Navigate to="/login" />}
         />
         <Route
           path="/question/:id"
