@@ -21,11 +21,13 @@ jobs:
       - name: Configure Git
         run: |
           git config --global user.name "uniniconn"
-          git config --global user.email "你的GitHub注册邮箱"  # 替换成你自己的邮箱
+          git config --global user.email "uniniconn@gmail.com"
 
       # 3. 克隆公开仓库，覆盖同步最新代码
       - name: Sync to public repository
         run: |
+          # 【修复核心】先强制删除已存在的public_repo目录，彻底解决目录非空问题
+          rm -rf public_repo
           # 克隆公开仓库（用PAT认证，确保有权限推送）
           git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
           # 用私有仓库的最新代码，完全覆盖公开仓库
