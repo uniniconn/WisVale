@@ -29,8 +29,8 @@ jobs:
           # 【核心修复1】强制删除已存在的public_repo目录，彻底解决目录非空问题
           rm -rf public_repo
           
-          # 【核心修复2】直接在URL中嵌入用户名+PAT，100%解决GitHub Actions认证失败
-          git clone https://uniniconn:${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
+          # 【核心修复2】直接在URL中嵌入PAT，GitHub Actions标准认证方案
+          git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
           
           # 用私有仓库的最新代码，完全覆盖公开仓库（--delete同步删除操作，--exclude保护.git目录）
           rsync -av --delete --exclude '.git' ./ public_repo/
