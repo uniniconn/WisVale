@@ -112,7 +112,7 @@ export default function EditQuestion({ user }: { user: User | null }) {
           }
           
           // Check permissions: admin or creator
-          if (user?.role !== 'admin' && data.creatorStudentId !== user?.studentId) {
+          if (user?.role !== 'admin' && data.createdBy !== user?.uid) {
             alert(t('edit.noPermission'));
             navigate('/');
             return;
