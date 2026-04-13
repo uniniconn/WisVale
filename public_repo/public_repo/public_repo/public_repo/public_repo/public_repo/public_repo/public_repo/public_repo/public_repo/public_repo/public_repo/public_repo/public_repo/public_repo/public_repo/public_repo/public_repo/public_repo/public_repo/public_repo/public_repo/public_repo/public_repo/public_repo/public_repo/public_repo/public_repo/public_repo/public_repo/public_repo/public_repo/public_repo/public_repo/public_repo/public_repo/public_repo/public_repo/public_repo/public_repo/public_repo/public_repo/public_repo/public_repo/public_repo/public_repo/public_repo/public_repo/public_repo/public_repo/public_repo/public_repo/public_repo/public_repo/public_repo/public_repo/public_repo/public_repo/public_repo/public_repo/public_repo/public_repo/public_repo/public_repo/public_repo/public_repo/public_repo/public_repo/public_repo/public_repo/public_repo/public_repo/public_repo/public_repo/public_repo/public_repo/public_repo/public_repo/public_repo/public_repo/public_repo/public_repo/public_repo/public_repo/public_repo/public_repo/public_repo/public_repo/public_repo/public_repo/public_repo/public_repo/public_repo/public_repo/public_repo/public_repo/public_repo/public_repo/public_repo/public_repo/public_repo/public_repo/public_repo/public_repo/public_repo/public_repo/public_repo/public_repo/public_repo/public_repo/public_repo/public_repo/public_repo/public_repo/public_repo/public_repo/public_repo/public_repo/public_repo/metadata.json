@@ -1,0 +1,7 @@
+{
+  "name": "WisVale",
+  "description": "A comprehensive biology question bank and paper generation system for SMS students.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
