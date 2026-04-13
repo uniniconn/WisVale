@@ -3,13 +3,13 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { db, auth, trackTokens } from '../firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { evaluateAnswerWithAI } from '../services/apiService';
-import { KnowledgePoint, User } from '../types';
+import { KnowledgePoint } from '../types';
 import { useTheme } from '../hooks/useTheme';
 import { useLanguage } from '../contexts/LanguageContext';
 import { Brain, ArrowLeft, Loader2, CheckCircle2, XCircle, ArrowRight, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-export default function AnswerPage({ user }: { user: User | null }) {
+export default function AnswerPage() {
   const { level } = useParams<{ level: string }>();
   const location = useLocation();
   const navigate = useNavigate();
@@ -92,8 +92,8 @@ export default function AnswerPage({ user }: { user: User | null }) {
         level: newLevel,
         mastered: newLevel === 4
       });
-      if (user?.uid) {
-        await updateDoc(doc(db, 'users', user.uid), {
+      if (auth.currentUser) {
+        await updateDoc(doc(db, 'users', auth.currentUser.uid), {
           questionsAnswered: increment(1)
         });
       }
