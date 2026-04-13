@@ -87,7 +87,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
           {t('detail.back')}
         </motion.button>
 
-        {(user?.role === 'admin' || user?.studentId === question.creatorStudentId) && (
+        {(user?.role === 'admin' || user?.uid === question.createdBy) && (
           <motion.button
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
