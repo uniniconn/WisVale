@@ -18,7 +18,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import Markdown from 'react-markdown';
 
-export default function KnowledgeSummary({ user }: { user: User | null }) {
+export default function KnowledgeSummary() {
   const { theme, isNight } = useTheme();
   const { t } = useLanguage();
   const [kps, setKps] = useState<KnowledgePoint[]>([]);
@@ -27,11 +27,11 @@ export default function KnowledgeSummary({ user }: { user: User | null }) {
   const [isGenerating, setIsGenerating] = useState(false);
 
   useEffect(() => {
-    if (!user?.studentId) return;
+    if (!auth.currentUser) return;
 
     const q = query(
       collection(db, 'knowledgePoints'),
-      where('studentId', '==', user.studentId),
+      where('userId', '==', auth.currentUser.uid),
       orderBy('createdAt', 'desc')
     );
 
@@ -42,7 +42,7 @@ export default function KnowledgeSummary({ user }: { user: User | null }) {
     });
 
     return () => unsubscribe();
-  }, [user?.studentId]);
+  }, []);
 
   const summaryData = useMemo(() => {
     const fields: Record<string, number> = {};
