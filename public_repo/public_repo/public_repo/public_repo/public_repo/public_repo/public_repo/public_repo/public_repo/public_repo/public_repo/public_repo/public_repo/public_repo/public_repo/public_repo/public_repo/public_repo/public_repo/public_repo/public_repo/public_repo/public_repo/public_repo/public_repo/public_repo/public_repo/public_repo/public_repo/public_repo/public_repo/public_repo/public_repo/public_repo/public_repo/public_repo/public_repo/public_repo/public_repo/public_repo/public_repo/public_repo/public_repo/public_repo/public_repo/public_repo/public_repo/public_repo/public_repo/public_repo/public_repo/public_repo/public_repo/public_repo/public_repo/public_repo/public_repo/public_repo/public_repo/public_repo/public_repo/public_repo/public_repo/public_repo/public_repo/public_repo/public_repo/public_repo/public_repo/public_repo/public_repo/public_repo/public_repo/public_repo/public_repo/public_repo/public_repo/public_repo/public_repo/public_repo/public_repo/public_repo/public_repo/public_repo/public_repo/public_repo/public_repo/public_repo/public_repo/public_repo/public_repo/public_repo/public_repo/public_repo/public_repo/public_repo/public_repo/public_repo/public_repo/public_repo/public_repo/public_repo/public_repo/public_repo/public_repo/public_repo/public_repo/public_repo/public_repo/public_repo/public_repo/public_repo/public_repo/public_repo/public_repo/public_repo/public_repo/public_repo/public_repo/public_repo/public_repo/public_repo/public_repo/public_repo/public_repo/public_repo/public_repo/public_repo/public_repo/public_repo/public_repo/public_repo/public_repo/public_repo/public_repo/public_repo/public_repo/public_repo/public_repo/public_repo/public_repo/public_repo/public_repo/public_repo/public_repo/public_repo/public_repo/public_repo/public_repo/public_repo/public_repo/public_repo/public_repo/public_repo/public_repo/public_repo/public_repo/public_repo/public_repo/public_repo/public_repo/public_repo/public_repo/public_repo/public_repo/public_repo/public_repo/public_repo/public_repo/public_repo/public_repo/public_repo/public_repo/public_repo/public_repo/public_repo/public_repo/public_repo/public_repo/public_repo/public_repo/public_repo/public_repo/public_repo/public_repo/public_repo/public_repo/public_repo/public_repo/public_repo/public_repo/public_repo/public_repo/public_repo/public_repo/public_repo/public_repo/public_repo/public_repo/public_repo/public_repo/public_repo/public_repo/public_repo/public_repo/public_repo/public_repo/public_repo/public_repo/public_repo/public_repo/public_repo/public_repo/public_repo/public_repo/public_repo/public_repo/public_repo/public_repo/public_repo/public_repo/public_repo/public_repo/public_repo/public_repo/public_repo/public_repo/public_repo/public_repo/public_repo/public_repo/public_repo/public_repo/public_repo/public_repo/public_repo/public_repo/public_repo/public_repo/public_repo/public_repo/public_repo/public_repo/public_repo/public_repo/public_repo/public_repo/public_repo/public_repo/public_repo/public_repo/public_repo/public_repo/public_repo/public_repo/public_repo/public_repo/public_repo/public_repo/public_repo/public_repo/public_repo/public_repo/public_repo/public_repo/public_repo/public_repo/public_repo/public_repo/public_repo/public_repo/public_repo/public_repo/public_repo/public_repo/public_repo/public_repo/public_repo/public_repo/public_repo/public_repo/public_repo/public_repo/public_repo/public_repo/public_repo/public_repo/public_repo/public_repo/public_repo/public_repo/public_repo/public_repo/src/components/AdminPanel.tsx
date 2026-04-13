@@ -295,18 +295,6 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
         });
         await batch.commit();
       }
-
-      // 3. Delete user-specific data associated with studentId
-      const collectionsToClean = ['knowledgePoints', 'userTags', 'userStats'];
-      for (const collName of collectionsToClean) {
-        const qData = query(collection(db, collName), where('studentId', '==', studentId));
-        const snapData = await getDocs(qData);
-        if (!snapData.empty) {
-          const batch = writeBatch(db);
-          snapData.docs.forEach(d => batch.delete(d.ref));
-          await batch.commit();
-        }
-      }
       
       setConfirmRemoveId(null);
     } catch (err) {
