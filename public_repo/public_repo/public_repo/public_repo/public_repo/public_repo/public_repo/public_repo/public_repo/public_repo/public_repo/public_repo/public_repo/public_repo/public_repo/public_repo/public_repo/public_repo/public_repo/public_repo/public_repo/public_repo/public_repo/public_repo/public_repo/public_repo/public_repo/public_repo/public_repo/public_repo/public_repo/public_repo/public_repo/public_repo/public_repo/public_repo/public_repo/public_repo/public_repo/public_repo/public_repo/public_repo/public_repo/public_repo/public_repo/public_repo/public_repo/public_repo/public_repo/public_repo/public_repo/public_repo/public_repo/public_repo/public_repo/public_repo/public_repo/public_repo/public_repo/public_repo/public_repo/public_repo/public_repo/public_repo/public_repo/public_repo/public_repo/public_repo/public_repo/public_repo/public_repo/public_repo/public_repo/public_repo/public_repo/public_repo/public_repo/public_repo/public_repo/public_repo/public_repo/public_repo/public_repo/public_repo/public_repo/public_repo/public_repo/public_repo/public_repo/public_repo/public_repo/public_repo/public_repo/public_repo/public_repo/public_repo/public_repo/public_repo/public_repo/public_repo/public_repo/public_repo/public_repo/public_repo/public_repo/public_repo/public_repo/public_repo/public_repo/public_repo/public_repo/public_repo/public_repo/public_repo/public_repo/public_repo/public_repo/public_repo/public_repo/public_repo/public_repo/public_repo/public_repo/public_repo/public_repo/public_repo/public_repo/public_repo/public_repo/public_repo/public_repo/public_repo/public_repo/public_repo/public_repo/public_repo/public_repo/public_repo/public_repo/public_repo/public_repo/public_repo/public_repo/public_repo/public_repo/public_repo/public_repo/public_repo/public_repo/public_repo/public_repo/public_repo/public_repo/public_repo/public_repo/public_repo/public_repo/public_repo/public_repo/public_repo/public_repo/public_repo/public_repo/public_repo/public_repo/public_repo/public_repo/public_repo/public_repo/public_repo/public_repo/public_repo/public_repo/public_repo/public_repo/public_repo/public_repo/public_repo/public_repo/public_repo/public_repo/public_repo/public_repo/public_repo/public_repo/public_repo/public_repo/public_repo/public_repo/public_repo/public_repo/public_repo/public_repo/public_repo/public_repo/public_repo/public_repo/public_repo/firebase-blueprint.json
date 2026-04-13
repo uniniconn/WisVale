@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Student or Admin user",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "description": "Unique student ID" },
+        "role": { "type": "string", "enum": ["admin", "student"], "description": "User role" },
+        "points": { "type": "integer", "description": "User incentive points" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "role"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Biology question entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "U1234 format ID" },
+        "imageUrl": { "type": "string", "description": "URL to the question image" },
+        "source": { "type": "string", "description": "Source of the question (e.g., Exam 2024)" },
+        "subject": { "type": "string", "description": "Subject (Biology)" },
+        "sourceDetail": { "type": "string", "description": "Detailed source description" },
+        "difficulty": { "type": "string", "enum": ["easy-to-mistake", "hard"], "description": "Difficulty type" },
+        "type": { "type": "string", "enum": ["calculation", "concept", "material"], "description": "Question type" },
+        "content": { "type": "string", "description": "OCR extracted text" },
+        "answer": { "type": "string", "description": "Optional answer" },
+        "explanation": { "type": "string", "description": "Optional detailed explanation" },
+        "createdBy": { "type": "string", "description": "UID of the creator" },
+        "creatorStudentId": { "type": "string", "description": "Student ID of the creator" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "publicTags": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "imageUrl", "source", "difficulty", "type", "createdBy"]
+    },
+    "UserTag": {
+      "title": "UserTag",
+      "description": "Private tags for questions",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Student ID" },
+        "questionId": { "type": "string", "description": "Question ID" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["userId", "questionId", "tags"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "User", "description": "User profiles" },
+    "/questions/{questionId}": { "schema": "Question", "description": "Question bank" },
+    "/userTags/{tagId}": { "schema": "UserTag", "description": "Private user tags" }
+  }
+}
