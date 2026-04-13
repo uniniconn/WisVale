@@ -103,8 +103,8 @@ export default function Dashboard({ user }: DashboardProps) {
       setAllUsers(usersData);
     });
 
-    if (auth.currentUser && user?.studentId) {
-      const tagsQ = query(collection(db, 'userTags'), where('studentId', '==', user.studentId));
+    if (auth.currentUser) {
+      const tagsQ = query(collection(db, 'userTags'), where('userId', '==', auth.currentUser.uid));
       const unsubscribeTags = onSnapshot(tagsQ, (snapshot) => {
         const tagsMap: Record<string, string[]> = {};
         snapshot.docs.forEach(doc => {
@@ -232,11 +232,10 @@ export default function Dashboard({ user }: DashboardProps) {
       return;
     }
 
-    if (!user?.studentId) return;
-    const tagId = `${user.studentId}_${questionId}`;
+    if (!auth.currentUser) return;
+    const tagId = `${auth.currentUser.uid}_${questionId}`;
     await setDoc(doc(db, 'userTags', tagId), {
-      userId: user.uid,
-      studentId: user.studentId,
+      userId: auth.currentUser.uid,
       questionId,
       tags: newTags
     });
@@ -262,18 +261,17 @@ export default function Dashboard({ user }: DashboardProps) {
       return;
     }
 
-    if (!user?.studentId) return;
-    const studentId = user.studentId;
+    if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
 
     try {
       const promises = selectedQuestions.map(async (questionId) => {
         const currentTags = userTags[questionId] || [];
         if (!currentTags.includes(tag)) {
           const newTags = [...currentTags, tag];
-          const tagId = `${studentId}_${questionId}`;
+          const tagId = `${uid}_${questionId}`;
           return setDoc(doc(db, 'userTags', tagId), {
-            userId: user.uid,
-            studentId: studentId,
+            userId: uid,
             questionId,
             tags: newTags
           });
@@ -348,11 +346,10 @@ export default function Dashboard({ user }: DashboardProps) {
       return;
     }
 
-    if (!user?.studentId) return;
-    const tagId = `${user.studentId}_${questionId}`;
+    if (!auth.currentUser) return;
+    const tagId = `${auth.currentUser.uid}_${questionId}`;
     await setDoc(doc(db, 'userTags', tagId), {
-      userId: user.uid,
-      studentId: user.studentId,
+      userId: auth.currentUser.uid,
       questionId,
       tags: newTags
     });
@@ -533,7 +530,7 @@ export default function Dashboard({ user }: DashboardProps) {
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
-                        if (!user?.studentId || selectedQuestions.length === 0) return;
+                        if (!auth.currentUser || selectedQuestions.length === 0) return;
                         try {
                           const batch = writeBatch(db);
                           let addedCount = 0;
@@ -550,7 +547,7 @@ export default function Dashboard({ user }: DashboardProps) {
                             for (const kp of uniqueKps) {
                               const qry = query(
                                 collection(db, 'knowledgePoints'),
-                                where('studentId', '==', user.studentId),
+                                where('userId', '==', auth.currentUser.uid),
                                 where('title', '==', kp.title)
                               );
                               const snapshot = await getDocs(qry);
@@ -566,8 +563,7 @@ export default function Dashboard({ user }: DashboardProps) {
                                   level: 1,
                                   mastered: false,
                                   createdAt: new Date().toISOString(),
-                                  userId: user.uid,
-                                  studentId: user.studentId
+                                  userId: auth.currentUser.uid
                                 });
                                 addedCount++;
                               }
