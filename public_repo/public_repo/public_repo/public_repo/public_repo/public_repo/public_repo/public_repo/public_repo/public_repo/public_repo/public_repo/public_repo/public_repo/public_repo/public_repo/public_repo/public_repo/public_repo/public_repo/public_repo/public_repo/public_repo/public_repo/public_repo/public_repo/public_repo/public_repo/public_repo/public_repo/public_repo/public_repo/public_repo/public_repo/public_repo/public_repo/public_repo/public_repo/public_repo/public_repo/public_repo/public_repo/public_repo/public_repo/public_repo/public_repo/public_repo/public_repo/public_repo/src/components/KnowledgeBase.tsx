@@ -32,7 +32,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import jsPDF from 'jspdf';
 
-export default function KnowledgeBase({ user }: { user: User | null }) {
+export default function KnowledgeBase() {
   const { theme, isNight } = useTheme();
   const { isMobileView } = useViewMode();
   const { t } = useLanguage();
@@ -71,11 +71,11 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
   }, [location.search]);
 
   useEffect(() => {
-    if (!user?.studentId) return;
+    if (!auth.currentUser) return;
 
     const q = query(
       collection(db, 'knowledgePoints'),
-      where('studentId', '==', user.studentId),
+      where('userId', '==', auth.currentUser.uid),
       orderBy('createdAt', 'desc')
     );
 
@@ -86,7 +86,7 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
     });
 
     return () => unsubscribe();
-  }, [user?.studentId]);
+  }, []);
 
   const filteredKps = useMemo(() => {
     return kps.filter(kp => {
@@ -161,7 +161,7 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
             // Check if already in user's knowledge base
             const qry = query(
               collection(db, 'knowledgePoints'),
-              where('studentId', '==', user?.studentId),
+              where('userId', '==', auth.currentUser!.uid),
               where('title', '==', kp.title)
             );
             const snapshot = await getDocs(qry);
@@ -177,8 +177,7 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
                 level: 1,
                 mastered: false,
                 createdAt: new Date().toISOString(),
-                userId: user?.uid,
-                studentId: user?.studentId
+                userId: auth.currentUser?.uid
               });
             }
           }
