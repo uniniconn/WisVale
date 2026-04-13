@@ -7,7 +7,7 @@ import { motion } from 'motion/react';
 import { Upload, Image as ImageIcon, Loader2, CheckCircle2, AlertCircle, RefreshCw, Camera, FolderOpen, Brain, Sparkles, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
-import { QuestionField, QuestionSource, QuestionDifficulty, QuestionType, User } from '../types';
+import { QuestionField, QuestionSource, QuestionDifficulty, QuestionType } from '../types';
 import { useTheme } from '../hooks/useTheme';
 
 // Image compression utility
@@ -45,7 +45,7 @@ const compressImage = (file: File, maxWidth = 1024, quality = 0.6): Promise<stri
   });
 };
 
-export default function UploadQuestion({ user }: { user: User | null }) {
+export default function UploadQuestion() {
   const navigate = useNavigate();
   const { isNight, theme } = useTheme();
   const { t } = useLanguage();
@@ -103,12 +103,12 @@ export default function UploadQuestion({ user }: { user: User | null }) {
   };
 
   const handleCollectToKnowledgeBase = async (kp: { title: string; content: string }) => {
-    if (!auth.currentUser || !isDemoMode && !user?.studentId) return;
+    if (!auth.currentUser) return;
     try {
       // Deduplication check
       const q = query(
         collection(db, 'knowledgePoints'),
-        where('studentId', '==', isDemoMode ? 'demo' : user?.studentId),
+        where('userId', '==', auth.currentUser.uid),
         where('title', '==', kp.title)
       );
       const snapshot = await getDocs(q);
@@ -118,8 +118,7 @@ export default function UploadQuestion({ user }: { user: User | null }) {
       }
 
       const kpData = {
-        userId: auth.currentUser?.uid || 'demo',
-        studentId: isDemoMode ? 'demo' : user?.studentId,
+        userId: auth.currentUser.uid,
         title: kp.title,
         content: kp.content,
         level: 1,
@@ -370,9 +369,9 @@ export default function UploadQuestion({ user }: { user: User | null }) {
         id: formattedId,
         imageUrl: supplementaryPreview || null, // Only store supplementary image
         ...formData,
-        createdBy: user?.uid || 'demo',
-        creatorStudentId: (isDemoMode ? 'demo' : user?.studentId) || '未知',
-        creatorNickname: (isDemoMode ? t('login.demo') : user?.nickname) || null,
+        createdBy: auth.currentUser.uid,
+        creatorStudentId: (isDemoMode ? 'demo' : userData?.studentId) || '未知',
+        creatorNickname: (isDemoMode ? t('login.demo') : userData?.nickname) || null,
         createdAt: new Date().toISOString(),
       };
 
@@ -384,12 +383,11 @@ export default function UploadQuestion({ user }: { user: User | null }) {
       let newKpsCount = 0;
       if (formData.knowledgePoints.length > 0) {
         const batch = writeBatch(db);
-        const studentId = isDemoMode ? 'demo' : userData?.studentId;
         for (const kp of formData.knowledgePoints) {
           // Check for duplicates before adding to batch
           const q = query(
             collection(db, 'knowledgePoints'),
-            where('studentId', '==', studentId),
+            where('userId', '==', auth.currentUser.uid),
             where('title', '==', kp.title)
           );
           const snapshot = await getDocs(q);
@@ -400,7 +398,6 @@ export default function UploadQuestion({ user }: { user: User | null }) {
             batch.set(kpRef, {
               id: kpRef.id,
               userId: auth.currentUser!.uid,
-              studentId: studentId,
               questionId: formattedId,
               field: formData.field[0] || '其他',
               title: kp.title,
