@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db, auth } from '../firebase';
 import { collection, query, where, onSnapshot, doc, updateDoc, deleteDoc, orderBy, writeBatch, getDocs } from 'firebase/firestore';
-import { KnowledgePoint, QuestionField, User } from '../types';
+import { KnowledgePoint, QuestionField } from '../types';
 import { useTheme } from '../hooks/useTheme';
 import { useViewMode } from '../hooks/useViewMode';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-export default function KnowledgeLevelPage({ user }: { user: User | null }) {
+export default function KnowledgeLevelPage() {
   const { level } = useParams<{ level: string }>();
   const navigate = useNavigate();
   const { theme, isNight } = useTheme();
@@ -59,11 +59,11 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
   const levelName = level === 'mastered' ? t('kb.level.masteredTitle') : t('kb.level.levelName', { level });
 
   useEffect(() => {
-    if (!user?.studentId) return;
+    if (!auth.currentUser) return;
 
     const q = query(
       collection(db, 'knowledgePoints'),
-      where('studentId', '==', user.studentId),
+      where('userId', '==', auth.currentUser.uid),
       where('level', '==', currentLevel),
       orderBy('createdAt', 'desc')
     );
@@ -75,7 +75,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
     });
 
     return () => unsubscribe();
-  }, [currentLevel, user?.studentId]);
+  }, [currentLevel]);
 
   const filteredKps = useMemo(() => {
     return kps.filter(kp => {
@@ -128,7 +128,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
   };
 
   const handleBatchImport = async () => {
-    if (!batchQuestionIds.trim() || !user?.studentId) return;
+    if (!batchQuestionIds.trim() || !auth.currentUser) return;
     setIsBatchImporting(true);
     try {
       const ids = batchQuestionIds.split(/[,，\s\n]+/).filter(id => id.trim());
@@ -144,7 +144,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
             // Deduplication check
             const dupQ = query(
               collection(db, 'knowledgePoints'),
-              where('studentId', '==', user.studentId),
+              where('userId', '==', auth.currentUser.uid),
               where('title', '==', kp.title)
             );
             const dupSnap = await getDocs(dupQ);
@@ -160,8 +160,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
                 level: 1,
                 mastered: false,
                 createdAt: new Date().toISOString(),
-                userId: user.uid,
-                studentId: user.studentId
+                userId: auth.currentUser.uid
               });
               addedCount++;
             }
