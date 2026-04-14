@@ -34,17 +34,19 @@ jobs:
           # 【核心修复2】直接在URL中嵌入PAT，GitHub Actions标准认证方案
           git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
           
-          # 【核心修复3】rsync 命令优化：彻底解决路径嵌套+过滤冗余文件
-          # --exclude 排除所有不需要同步的文件/目录，避免仓库冗余
+          # 【核心修复3】rsync 命令彻底优化：解决路径嵌套+过滤冗余文件
+          # 1. 先排除public_repo目录本身，避免无限嵌套
+          # 2. 排除所有不需要同步的文件/目录，避免仓库冗余
           rsync -av --delete \
-            --exclude '.git' \
-            --exclude '.github' \
-            --exclude 'node_modules' \
-            --exclude '.env' \
-            --exclude '.env.local' \
-            --exclude '*.log' \
-            --exclude '.DS_Store' \
-            --exclude '*.tmp' \
+            --exclude='public_repo/' \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='node_modules/' \
+            --exclude='.env' \
+            --exclude='.env.local' \
+            --exclude='*.log' \
+            --exclude='.DS_Store' \
+            --exclude='*.tmp' \
             ./ public_repo/
           
           # 进入公开仓库目录
@@ -54,13 +56,3 @@ jobs:
           git add .
           git commit -m "Sync from WisVale_private [${{ github.sha }}]" || echo "No changes to commit, skipping push"
           git push origin main
-
-      # 4. 增加失败重试（应对网络波动导致的临时失败）
-      - name: Retry on failure
-        if: failure()
-        uses: nick-invision/retry@v3
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          retry_on: failure
-          command: ${{ github.workflow }}
