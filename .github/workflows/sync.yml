@@ -13,50 +13,42 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          persist-credentials: false
 
       - name: Configure Git
         run: |
           git config --global user.name "uniniconn"
           git config --global user.email "uniniconn@gmail.com"
-          git config --global core.autocrlf false
 
-      # 开启调试：会打印每一条执行的命令，方便看哪一步报错
-      - name: Sync with debug log
+      - name: Sync (no nested public_repo)
         run: |
-          set -eux
+          # 强制清理所有残留目录
+          rm -rf public_repo sync_files
 
-          rm -rf public_repo tmp_copy
-          mkdir tmp_copy
-
-          # 复制项目文件，排除所有会冲突的目录
+          # ==============================
+          # 关键：先把 项目文件 复制到 sync_files
+          # 【永远排除 public_repo】，所以绝对不会嵌套
+          # ==============================
           rsync -a \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='node_modules/' \
             --exclude='public_repo/' \
-            --exclude='tmp_copy/' \
-            ./ tmp_copy/
+            --exclude='sync_files/' \
+            ./ sync_files/
 
-          # 克隆公仓
+          # 克隆公开仓库
           git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
 
-          # 清空公仓内容（保留 .git）
+          # 清空公开仓库里的旧文件（保留.git）
           cd public_repo
-          find . -not -path '.git' -not -path '.git/*' -delete 2>/dev/null
+          find . -maxdepth 1 -not -name '.git' -exec rm -rf {} +
           cd ..
 
-          # 把干净文件拷进去
-          cp -rf tmp_copy/* public_repo/
+          # 把干净文件复制过去
+          cp -r sync_files/* public_repo/
 
+          # 提交，遵守 .gitignore，不加 -f → 不会提交密钥
           cd public_repo
-
-          # 正常添加，不加 -f，遵守 .gitignore → 不会上传密钥
           git add .
-
-          git commit -m "Sync from private repo [${{ github.sha }}]" || {
-            echo "=== No changes to commit ==="
-            exit 0
-          }
-
+          git commit -m "Sync from private repo" || echo "No changes"
           git push origin main
