@@ -1,4 +1,4 @@
-name: Sync WisVale_private to WisVale (Clean Sync)
+name: Sync WisVale_private to WisVale
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout private repo
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -19,35 +19,44 @@ jobs:
         run: |
           git config --global user.name "uniniconn"
           git config --global user.email "uniniconn@gmail.com"
+          git config --global core.autocrlf false
 
-      - name: Safe sync
+      # 开启调试：会打印每一条执行的命令，方便看哪一步报错
+      - name: Sync with debug log
         run: |
-          # 清理
-          rm -rf public_repo tmp_files
-          mkdir tmp_files
+          set -eux
 
-          # 只复制：项目真实文件，排除所有禁止目录
+          rm -rf public_repo tmp_copy
+          mkdir tmp_copy
+
+          # 复制项目文件，排除所有会冲突的目录
           rsync -a \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='node_modules' \
-            --exclude='public_repo' \
-            --exclude='tmp_files' \
-            ./ tmp_files/
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='node_modules/' \
+            --exclude='public_repo/' \
+            --exclude='tmp_copy/' \
+            ./ tmp_copy/
 
           # 克隆公仓
           git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
 
-          # 清空公仓旧文件
+          # 清空公仓内容（保留 .git）
           cd public_repo
-          find . -path ./.git -prune -o -exec rm -rf {} + 2>/dev/null
+          find . -not -path '.git' -not -path '.git/*' -delete 2>/dev/null
           cd ..
 
           # 把干净文件拷进去
-          cp -r tmp_files/* public_repo/
+          cp -rf tmp_copy/* public_repo/
 
-          # 提交
           cd public_repo
+
+          # 正常添加，不加 -f，遵守 .gitignore → 不会上传密钥
           git add .
-          git commit -m "Sync from private repo [${{ github.sha }}]" || echo "No changes"
+
+          git commit -m "Sync from private repo [${{ github.sha }}]" || {
+            echo "=== No changes to commit ==="
+            exit 0
+          }
+
           git push origin main
