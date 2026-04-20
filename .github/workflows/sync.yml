@@ -1,4 +1,4 @@
-name: Sync WisVale_private to WisVale (Safe & Stable)
+name: Sync WisVale_private to WisVale (Safe & No Self Copy)
 
 on:
   push:
@@ -20,35 +20,32 @@ jobs:
           git config --global user.name "uniniconn"
           git config --global user.email "uniniconn@gmail.com"
 
-      - name: Sync files (no key leak, fix directory exists error)
+      - name: Sync files safely
         run: |
-          # 强制清理，无论目录是否存在，彻底删掉
+          # 清理旧目录
           rm -rf public_repo
-
-          # 克隆公开仓库
+          
+          # 克隆公仓
           git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
 
-          # 进入工作目录
+          # 进入公仓，清空除 .git 以外的所有内容
           cd public_repo
-
-          # 清空公开仓库里所有内容，保持干净
-          find . -path ./.git -prune -o -exec rm -rf {} \; 2>/dev/null || true
-
-          # 回到上级，把私有仓库所有文件复制过来
+          find . -path ./.git -prune -o -rm -rf {} \; 2>/dev/null
           cd ..
-          cp -r ./* public_repo/
 
-          # 进入公开仓库
+          # 【关键】只复制 非public_repo 的所有内容，避免自复制
+          rsync -a \
+            --exclude='public_repo/' \
+            --exclude='.git/' \
+            ./ public_repo/
+
           cd public_repo
 
-          # 移除不需要同步的目录
-          rm -rf .github
-          rm -rf node_modules
+          # 不同步的目录
+          rm -rf .github node_modules
 
-          # 【关键】正常 git add，严格遵守 .gitignore
-          # 👉 .gitignore 里的 key / 密钥 / .env 不会被提交
+          # 遵守 .gitignore，不强制提交 → 不会上传key/密钥
           git add .
 
-          # 提交
-          git commit -m "Sync from private repo [${{ github.sha }}]" || echo "No changes to commit"
+          git commit -m "Sync from private repo [${{ github.sha }}]" || echo "No changes"
           git push origin main
