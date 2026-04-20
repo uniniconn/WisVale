@@ -1,4 +1,4 @@
-name: Sync WisVale_private to WisVale (No History)
+name: Sync WisVale_private to WisVale (No Key Leak)
 
 on:
   push:
@@ -19,29 +19,30 @@ jobs:
         run: |
           git config --global user.name "uniniconn"
           git config --global user.email "uniniconn@gmail.com"
-          git config --global core.autocrlf false
 
-      - name: Sync all files to public repo
+      - name: Sync with .gitignore (no keys)
         run: |
-          rm -rf public_repo
+          # 克隆公开仓库
           git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
 
-          # 同步：除了明确排除的，所有文件全部强制同步
-          rsync -a --delete \
-            --exclude='.git/' \
-            --exclude='.github/' \
-            --exclude='node_modules/' \
-            --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='*.log' \
-            --exclude='.DS_Store' \
-            --exclude='*.tmp' \
-            ./ public_repo/
+          # 清空公开仓库内容
+          rm -rf public_repo/*
+          rm -rf public_repo/.[!.]* 2>/dev/null || true
+
+          # 复制全部文件
+          cp -r ./* public_repo/
+          cp -r ./.* public_repo/ 2>/dev/null || true
 
           cd public_repo
 
-          # 强制添加所有文件（无视 .gitignore，确保全部提交）
-          git add --all --force
+          # 删掉不需要同步的目录
+          rm -rf .git
+          rm -rf .github
+          rm -rf node_modules
 
-          git commit -m "Full sync from WisVale_private [${{ github.sha }}]" || echo "No changes"
+          # 【关键】只提交 没有被 .gitignore 忽略的文件
+          # 👉 你的 key、.env、密钥 会被 .gitignore 挡住，不会提交
+          git add .
+
+          git commit -m "Sync from private repo [${{ github.sha }}]" || echo "No changes"
           git push origin main
