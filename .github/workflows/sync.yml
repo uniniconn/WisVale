@@ -19,36 +19,36 @@ jobs:
           git config --global user.name "uniniconn"
           git config --global user.email "uniniconn@gmail.com"
 
-      - name: Sync (no nested public_repo)
+      - name: Safe sync (no errors)
         run: |
-          # 强制清理所有残留目录
-          rm -rf public_repo sync_files
+          set -e
 
-          # ==============================
-          # 关键：先把 项目文件 复制到 sync_files
-          # 【永远排除 public_repo】，所以绝对不会嵌套
-          # ==============================
+          rm -rf public_repo sync_files
+          mkdir sync_files
+
+          # 复制项目文件，排除所有不需要的
           rsync -a \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='node_modules/' \
             --exclude='public_repo/' \
-            --exclude='sync_files/' \
             ./ sync_files/
 
-          # 克隆公开仓库
           git clone https://${{ secrets.PAT }}@github.com/uniniconn/WisVale.git public_repo
 
-          # 清空公开仓库里的旧文件（保留.git）
+          # 进入公开仓库，只删除文件，绝对不碰 . 和 ..
           cd public_repo
-          find . -maxdepth 1 -not -name '.git' -exec rm -rf {} +
-          cd ..
+          shopt -s dotglob
+          for item in *; do
+            if [ "$item" != ".git" ]; then
+              rm -rf "$item"
+            fi
+          done
 
-          # 把干净文件复制过去
-          cp -r sync_files/* public_repo/
+          # 复制文件
+          cp -r ../sync_files/* .
 
-          # 提交，遵守 .gitignore，不加 -f → 不会提交密钥
-          cd public_repo
+          # 正常提交，不强制，遵守 .gitignore → 不会上传密钥
           git add .
           git commit -m "Sync from private repo" || echo "No changes"
           git push origin main
