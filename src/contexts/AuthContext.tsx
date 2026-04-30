@@ -20,7 +20,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const savedUser = localStorage.getItem('app_user');
+      const savedUser = localStorage.getItem('wisvale-user');
       if (savedUser) {
         try {
           const parsed = JSON.parse(savedUser);
@@ -28,12 +28,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const latest = await api.get('users', parsed.uid);
             setUser(latest);
-            localStorage.setItem('app_user', JSON.stringify(latest));
+            localStorage.setItem('wisvale-user', JSON.stringify(latest));
           } catch (err: any) {
             if (err.message && err.message.includes('404')) {
               console.warn("User not found on server, logging out");
               setUser(null);
-              localStorage.removeItem('app_user');
+              localStorage.removeItem('wisvale-user');
             } else {
               throw err; // Re-throw for general error logging below
             }
@@ -41,7 +41,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (err) {
           console.error("Auth check failed:", err);
           setUser(null);
-          localStorage.removeItem('app_user');
+          localStorage.removeItem('wisvale-user');
         }
       }
       setLoading(false);
@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     
     // Polling or listener simulation
     const interval = setInterval(async () => {
-      const savedUser = localStorage.getItem('app_user');
+      const savedUser = localStorage.getItem('wisvale-user');
       if (savedUser) {
         try {
           const parsed = JSON.parse(savedUser);
@@ -71,7 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const u = await api.auth.login(email);
       setUser(u);
-      localStorage.setItem('app_user', JSON.stringify(u));
+      localStorage.setItem('wisvale-user', JSON.stringify(u));
       window.dispatchEvent(new Event('login-success'));
     } catch (err) {
       console.error("Login failed:", err);
@@ -83,7 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     setUser(null);
-    localStorage.removeItem('app_user');
+    localStorage.removeItem('wisvale-user');
   };
 
   return (

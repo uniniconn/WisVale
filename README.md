@@ -1,8 +1,8 @@
-# BioC - 智能生物竞赛学习平台
+# WisVale - 智能生物竞赛学习平台
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/uniniconn/bioc-competition-system)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/uniniconn/WisVale)
 
-BioC 是一个专为生物竞赛学子设计的智能化学习与知识管理平台。基于 Cloudflare 生态构建，提供高性能、低延迟的全球访问体验。
+WisVale 是一个专为生物竞赛学子设计的智能化学习与知识管理平台。基于 Cloudflare 生态构建，提供高性能、低延迟的全球访问体验。
 
 ## ✨ 核心特性
 
@@ -26,15 +26,15 @@ BioC 是一个专为生物竞赛学子设计的智能化学习与知识管理平
 
 ### 自动化流程说明：
 1. **自动 Fork**：系统会将仓库 Fork 到您的 GitHub 账号。
-2. **自动建库**：自动创建名为 `bioc-db` 的 D1 数据库。
+2. **自动建库**：自动创建名为 `wisvale-db` 的 D1 数据库。
 3. **自动初始化**：自动执行 `migrations` 目录下的 SQL 文件完成建表（无需手动敲命令）。
 4. **自动绑定**：自动完成 Pages 项目与数据库的变量绑定。
 
 ### 手动部署 (可选)
 如果需要手动微调，请参考：
 1. 确保已安装 Node.js 和 Wrangler。
-2. 运行 `npx wrangler d1 migrations apply bioc-db --remote` 初始化数据库。
-3. 在 Cloudflare Pages 后台绑定 D1 数据库，变量名为 `DB`。
+2. 运行 `npx wrangler d1 migrations apply wisvale-db --remote` 初始化数据库。
+3. 在 Cloudflare Pages 后台绑定 D1 数据库，变量名为 `DB`，数据库选择 `wisvale-db`。
 
 ## 🛠️ 技术栈
 
@@ -46,4 +46,4 @@ BioC 是一个专为生物竞赛学子设计的智能化学习与知识管理平
 
 ---
 
-*由 BioC 团队驱动 - 为生物竞赛而生*
+*由 WisVale 团队驱动 - 为生物竞赛而生*

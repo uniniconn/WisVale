@@ -5,7 +5,7 @@ const API_BASE = '/api/db';
 
 const getHeaders = () => {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const user = localStorage.getItem('bioc-user');
+  const user = localStorage.getItem('wisvale-user');
   if (user) {
     try {
       const userData = JSON.parse(user);

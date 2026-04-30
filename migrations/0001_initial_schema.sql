@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- Seed initial settings
-INSERT OR IGNORE INTO settings (id, value) VALUES ('keys', '{"deepseek": "sk-33c622738cce477c89644e4166af1244", "ocr": "K81905751788957"}');
+INSERT OR IGNORE INTO settings (id, value) VALUES ('keys', '{"deepseek": "", "ocr": ""}');
 INSERT OR IGNORE INTO settings (id, value) VALUES ('birthday', '{"slogan": "祝生物竞赛学子生日快乐！", "isEnabled": false}');
 INSERT OR IGNORE INTO settings (id, value) VALUES ('qidan', '{"isEnabled": false}');
 INSERT OR IGNORE INTO settings (id, value) VALUES ('art', '{"isEnabled": false}');
