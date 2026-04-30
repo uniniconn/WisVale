@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, auth, awardPoints } from '../firebase';
-import { doc, getDoc, collection, setDoc, writeBatch, query, where, getDocs } from 'firebase/firestore';
+import { api } from '../lib/api';
 import { Question, User } from '../types';
 import { useTheme } from '../hooks/useTheme';
 import { useViewMode } from '../hooks/useViewMode';
@@ -34,18 +33,9 @@ export default function QuestionDetail({ user }: { user: User | null }) {
     const fetchQuestion = async () => {
       if (!id) return;
       try {
-        // Try fetching by ID (which is the custom ID like U0001)
-        const q = query(collection(db, 'questions'), where('id', '==', id));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          setQuestion({ ...snap.docs[0].data(), firestoreId: snap.docs[0].id } as Question);
-        } else {
-          // Fallback to firestore ID just in case
-          const docRef = doc(db, 'questions', id);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            setQuestion({ ...docSnap.data(), firestoreId: docSnap.id } as Question);
-          }
+        const questionsData = await api.get('questions', undefined, { id: id });
+        if (questionsData && questionsData.length > 0) {
+          setQuestion(questionsData[0]);
         }
       } catch (err) {
         console.error("Error fetching question:", err);
@@ -111,7 +101,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
                   <div className="w-1.5 h-5 bg-green-500 rounded-full"></div>
-                  <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-600' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.content')}</h3>
+                  <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.content')}</h3>
                 </div>
                 <div className={`p-8 rounded-[2rem] ${isNight ? 'bg-slate-900/50' : 'bg-slate-50'} border ${theme.border} text-lg leading-relaxed ${theme.text} font-medium whitespace-pre-wrap`}>
                   {question.content}
@@ -122,7 +112,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
                     <div className="w-1.5 h-5 bg-blue-500 rounded-full"></div>
-                    <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-600' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.image')}</h3>
+                    <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.image')}</h3>
                   </div>
                   <div className={`p-4 rounded-[2rem] ${isNight ? 'bg-slate-900/50' : 'bg-slate-50'} border ${theme.border} overflow-hidden`}>
                     <img 
@@ -139,7 +129,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
                     <div className="w-1.5 h-5 bg-orange-500 rounded-full"></div>
-                    <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-600' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.answer')}</h3>
+                    <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.answer')}</h3>
                   </div>
                   <div className={`p-6 rounded-3xl ${isNight ? 'bg-orange-500/10' : 'bg-orange-50'} border border-orange-500/20 text-xl font-black text-orange-600`}>
                     {question.answer || t('detail.noAnswer')}
@@ -149,7 +139,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
                     <div className="w-1.5 h-5 bg-blue-500 rounded-full"></div>
-                    <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-600' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.explanation')}</h3>
+                    <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.explanation')}</h3>
                   </div>
                   <div className={`p-6 rounded-3xl ${isNight ? 'bg-blue-500/10' : 'bg-blue-50'} border border-blue-500/20 text-sm leading-relaxed ${theme.text} font-medium`}>
                     {question.explanation || t('detail.noExplanation')}
@@ -169,7 +159,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="w-1.5 h-5 bg-green-500 rounded-full"></div>
-                  <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-600' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.aiKps')}</h3>
+                  <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.aiKps')}</h3>
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-3">
@@ -195,7 +185,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
             <div className="space-y-6">
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-5 bg-purple-500 rounded-full"></div>
-                <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-600' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.categoryInfo')}</h3>
+                <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.categoryInfo')}</h3>
               </div>
               
               <div className="grid grid-cols-1 gap-4">
@@ -219,7 +209,7 @@ export default function QuestionDetail({ user }: { user: User | null }) {
             <div className="space-y-6">
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-5 bg-pink-500 rounded-full"></div>
-                <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-600' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.metadata')}</h3>
+                <h3 className={`text-[10px] font-black ${isNight ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-[0.2em]`}>{t('detail.metadata')}</h3>
               </div>
               <div className="space-y-4">
                 <div className="flex items-center gap-3">

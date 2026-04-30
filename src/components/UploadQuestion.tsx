@@ -1,54 +1,116 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, memo, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { db, auth, isDemoMode, awardPoints, trackTokens } from '../firebase';
-import { collection, addDoc, serverTimestamp, doc, setDoc, getDoc, updateDoc, increment, getDocs, query, where, writeBatch } from 'firebase/firestore';
-import { extractTextFromImage, processQuestionWithAI, generateSingleKpWithAI } from '../services/apiService';
-import { motion } from 'motion/react';
-import { Upload, Image as ImageIcon, Loader2, CheckCircle2, AlertCircle, RefreshCw, Camera, FolderOpen, Brain, Sparkles, Plus } from 'lucide-react';
+import { api, awardPoints, trackTokens } from '../lib/api';
+import { processQuestionWithAI, generateSingleKpWithAI, performOCR } from '../services/apiService';
+import { motion, AnimatePresence } from 'motion/react';
+import { Upload, Loader2, CheckCircle2, AlertCircle, RefreshCw, Brain, Sparkles, Plus, Command, Crop as CropIcon, Check, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../contexts/LanguageContext';
 import { QuestionField, QuestionSource, QuestionDifficulty, QuestionType, User } from '../types';
 import { useTheme } from '../hooks/useTheme';
+import { compressImage, prepareForOCR } from '../lib/imageUtils';
+import ImageUploadCard from './upload/ImageUploadCard';
+import KPPreviewCard from './upload/KPPreviewCard';
+import ReactCrop, { type Crop, type PixelCrop, centerCrop, makeAspectCrop } from 'react-image-crop';
+import 'react-image-crop/dist/ReactCrop.css';
 
-// Image compression utility
-const compressImage = (file: File, maxWidth = 1024, quality = 0.6): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
+// --- Helpers ---
 
-        // Resize if too large
-        if (width > maxWidth) {
-          height = (maxWidth / width) * height;
-          width = maxWidth;
-        }
+async function getCroppedImg(image: HTMLImageElement, pixelCrop: PixelCrop): Promise<string> {
+  const canvas = document.createElement('canvas');
+  const scaleX = image.naturalWidth / image.width;
+  const scaleY = image.naturalHeight / image.height;
+  
+  // Set canvas to the actual pixels from the original image
+  canvas.width = pixelCrop.width * scaleX;
+  canvas.height = pixelCrop.height * scaleY;
+  
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('No 2d context');
 
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return reject(new Error('Failed to get canvas context'));
-        
-        ctx.drawImage(img, 0, 0, width, height);
-        // Use image/jpeg for better compression ratio
-        const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        resolve(dataUrl);
-      };
-      img.onerror = (err) => reject(err);
-    };
-    reader.onerror = (err) => reject(err);
-  });
-};
+  // Use high-quality smoothing for any potential scaling
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  ctx.drawImage(
+    image,
+    pixelCrop.x * scaleX,
+    pixelCrop.y * scaleY,
+    pixelCrop.width * scaleX,
+    pixelCrop.height * scaleY,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  // Return maximum quality jpeg
+  return canvas.toDataURL('image/jpeg', 1.0);
+}
+
+function detectQuestionArea(image: HTMLImageElement): Crop {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return centerCrop(makeAspectCrop({ unit: '%', width: 90 }, 1, image.width, image.height), image.width, image.height);
+
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  ctx.drawImage(image, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+  let minX = canvas.width, minY = canvas.height, maxX = 0, maxY = 0;
+  let found = false;
+
+  // Use smaller step and more robust threshold
+  const step = 5;
+  const threshold = 180; // Detect pixels darker than this (for white background)
+
+  for (let y = 0; y < canvas.height; y += step) {
+    for (let x = 0; x < canvas.width; x += step) {
+      const i = (y * canvas.width + x) * 4;
+      const r = imageData[i];
+      const g = imageData[i+1];
+      const b = imageData[i+2];
+      
+      // Simple dark pixel detection (text usually is black/dark blue on white)
+      if (r < threshold && g < threshold && b < threshold) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+        found = true;
+      }
+    }
+  }
+
+  // If no content found or the area is too small (noise), default to 90% center
+  if (!found || (maxX - minX < 20 && maxY - minY < 20)) {
+    return centerCrop(makeAspectCrop({ unit: '%', width: 90 }, 1, image.width, image.height), image.width, image.height);
+  }
+
+  const pad = 60;
+  minX = Math.max(0, minX - pad);
+  minY = Math.max(0, minY - pad);
+  maxX = Math.min(canvas.width, maxX + pad);
+  maxY = Math.min(canvas.height, maxY + pad);
+
+  return {
+    unit: '%',
+    x: (minX / canvas.width) * 100,
+    y: (minY / canvas.height) * 100,
+    width: ((maxX - minX) / canvas.width) * 100,
+    height: ((maxY - minY) / canvas.height) * 100
+  };
+}
+
+// --- Component ---
 
 export default function UploadQuestion({ user }: { user: User | null }) {
   const navigate = useNavigate();
   const { isNight, theme } = useTheme();
   const { t } = useLanguage();
+  
+  // Refs for manual triggers
   const textCameraInputRef = useRef<HTMLInputElement>(null);
   const textGalleryInputRef = useRef<HTMLInputElement>(null);
   const suppCameraInputRef = useRef<HTMLInputElement>(null);
@@ -56,16 +118,27 @@ export default function UploadQuestion({ user }: { user: User | null }) {
   const explanationCameraInputRef = useRef<HTMLInputElement>(null);
   const explanationGalleryInputRef = useRef<HTMLInputElement>(null);
 
-  const [textImageFile, setTextImageFile] = useState<File | null>(null);
+  // Image states
   const [textImagePreview, setTextImagePreview] = useState<string | null>(null);
-  const [supplementaryFile, setSupplementaryFile] = useState<File | null>(null);
   const [supplementaryPreview, setSupplementaryPreview] = useState<string | null>(null);
-  const [explanationFile, setExplanationFile] = useState<File | null>(null);
   const [explanationPreview, setExplanationPreview] = useState<string | null>(null);
+  
+  // Crop states
+  const [isCropping, setIsCropping] = useState(false);
+  const [imageToCrop, setImageToCrop] = useState<string | null>(null);
+  const [crop, setCrop] = useState<Crop>();
+  const [completedCrop, setCompletedCrop] = useState<PixelCrop>();
+  const [cropType, setCropType] = useState<'text' | 'supp' | 'expl'>('text');
+  const cropImgRef = useRef<HTMLImageElement>(null);
+
+  // Loading states
   const [loading, setLoading] = useState(false);
   const [isOcrLoading, setIsOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [kpLoadingStates, setKpLoadingStates] = useState<Record<number, boolean>>({});
+  
+  // Data states
   const [pendingKnowledgePoints, setPendingKnowledgePoints] = useState<{ title: string; content: string }[]>([]);
   const [formData, setFormData] = useState({
     field: ['生物化学'] as QuestionField[],
@@ -92,8 +165,8 @@ export default function UploadQuestion({ user }: { user: User | null }) {
           return next;
         });
       }
-      if (data.usage?.total_tokens) {
-        trackTokens(data.usage.total_tokens);
+      if (data.usage?.total_tokens && user) {
+        trackTokens(data.usage.total_tokens, user.uid);
       }
     } catch (err) {
       console.error('Single KP regeneration failed:', err);
@@ -102,695 +175,432 @@ export default function UploadQuestion({ user }: { user: User | null }) {
     }
   };
 
-  const handleCollectToKnowledgeBase = async (kp: { title: string; content: string }) => {
-    if (!auth.currentUser || !isDemoMode && !user?.studentId) return;
-    try {
-      // Deduplication check
-      const q = query(
-        collection(db, 'knowledgePoints'),
-        where('studentId', '==', isDemoMode ? 'demo' : user?.studentId),
-        where('title', '==', kp.title)
-      );
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        alert(t('upload.kpExists', { title: kp.title }));
-        return;
-      }
-
-      const kpData = {
-        userId: auth.currentUser?.uid || 'demo',
-        studentId: isDemoMode ? 'demo' : user?.studentId,
-        title: kp.title,
-        content: kp.content,
-        level: 1,
-        mastered: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        questionId: 'pending_upload',
-        field: formData.field[0] || '其他'
-      };
-      await addDoc(collection(db, 'knowledgePoints'), kpData);
-      alert(t('upload.kpCollected', { title: kp.title }));
-    } catch (err) {
-      console.error('Failed to collect knowledge point:', err);
-      alert(t('upload.kpCollectFail'));
-    }
-  };
-
   const handleRegenerateKps = async () => {
     if (!formData.content.trim()) return;
     setIsAiProcessing(true);
     try {
       const data = await processQuestionWithAI(formData.content);
-      
-      setPendingKnowledgePoints(data.knowledgePoints || []);
-      if (data.usage?.total_tokens) {
-        trackTokens(data.usage.total_tokens);
+      if (data.knowledgePoints) {
+        setPendingKnowledgePoints(data.knowledgePoints);
+      }
+      if (data.usage?.total_tokens && user) {
+        trackTokens(data.usage.total_tokens, user.uid);
       }
     } catch (err) {
-      console.error('Regeneration failed:', err);
+      console.error('AI processing failed:', err);
     } finally {
       setIsAiProcessing(false);
     }
   };
 
   const onDropText = useCallback(async (acceptedFiles: File[]) => {
-    const selectedFile = acceptedFiles[0];
-    if (selectedFile) {
-      setTextImageFile(selectedFile);
-      try {
-        const compressedDataUrl = await compressImage(selectedFile);
-        setTextImagePreview(compressedDataUrl);
-      } catch (err) {
-        console.error('Compression failed:', err);
-      }
-    }
-  }, []);
+    const file = acceptedFiles[0];
+    if (!file) return;
 
-  const onDropExplanation = useCallback(async (acceptedFiles: File[]) => {
-    const selectedFile = acceptedFiles[0];
-    if (selectedFile) {
-      setExplanationFile(selectedFile);
-      try {
-        const compressedDataUrl = await compressImage(selectedFile);
-        setExplanationPreview(compressedDataUrl);
-      } catch (err) {
-        console.error('Compression failed:', err);
-      }
-    }
-  }, []);
-
-  const handleStartRecognition = async () => {
-    if (!textImagePreview) {
-      alert(t('upload.noImageError'));
-      return;
-    }
-    setIsOcrLoading(true);
-    setIsAiProcessing(true);
-    let rawText = '';
-    let rawExplanation = '';
     try {
-      rawText = await extractTextFromImage(textImagePreview);
-      if (explanationPreview) {
-        rawExplanation = await extractTextFromImage(explanationPreview);
-      }
-      
-      // Helper for similarity check
-      const levenshteinDistance = (s1: string, s2: string): number => {
-        const len1 = s1.length;
-        const len2 = s2.length;
-        const matrix = Array.from({ length: len1 + 1 }, (_, i) => [i]);
-        for (let j = 1; j <= len2; j++) matrix[0][j] = j;
-
-        for (let i = 1; i <= len1; i++) {
-          for (let j = 1; j <= len2; j++) {
-            const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
-            matrix[i][j] = Math.min(
-              matrix[i - 1][j] + 1,
-              matrix[i][j - 1] + 1,
-              matrix[i - 1][j - 1] + cost
-            );
-          }
-        }
-        return matrix[len1][len2];
-      };
-
-      // Pre-AI duplicate check
-      const qSnap = await getDocs(collection(db, 'questions'));
-      let duplicateDocId = '';
-      const isDuplicate = qSnap.docs.some(doc => {
-        const content = doc.data().content;
-        if (!content) return false;
-        const cleanedRaw = rawText.replace(/\s/g, '');
-        const cleanedContent = content.replace(/\s/g, '');
-        
-        const distance = levenshteinDistance(cleanedRaw, cleanedContent);
-        const maxLen = Math.max(cleanedRaw.length, cleanedContent.length);
-        const similarity = 1 - (distance / maxLen);
-        
-        const match = similarity > 0.9; // 90% similarity threshold
-        if (match) duplicateDocId = doc.id;
-        return match;
-      });
-
-      if (isDuplicate) {
-        alert(t('upload.duplicateQuestion'));
-        navigate(`/question/${duplicateDocId}`);
-        return;
-      }
-
-      const data = await processQuestionWithAI(rawText, rawExplanation);
-
-        setFormData(prev => ({ 
-          ...prev, 
-          content: data.cleanedContent,
-          explanation: data.cleanedExplanation || rawExplanation
-        }));
-        
-        // Deduplicate AI suggested knowledge points
-        const uniqueKps = (data.knowledgePoints || []).filter((kp: any, index: number, self: any[]) =>
-          index === self.findIndex((t) => t.title === kp.title)
-        );
-        setPendingKnowledgePoints(uniqueKps);
-        
-        if (data.usage?.total_tokens) {
-          trackTokens(data.usage.total_tokens);
-        }
+      const dataUrl = await compressImage(file);
+      setImageToCrop(dataUrl);
+      setCropType('text');
+      setIsCropping(true);
     } catch (err) {
-      console.error('Processing failed:', err);
-      if (rawText) {
-        setFormData(prev => ({ ...prev, content: rawText, explanation: rawExplanation }));
+      console.error('Image compression failed:', err);
+    }
+  }, []);
+
+  const handleCropConfirm = async () => {
+    if (!cropImgRef.current || !completedCrop || !imageToCrop) return;
+
+    try {
+      const croppedDataUrl = await getCroppedImg(cropImgRef.current, completedCrop);
+      setIsCropping(false);
+
+      if (cropType === 'text') {
+        setTextImagePreview(croppedDataUrl);
+        setIsOcrLoading(true);
+        setOcrProgress(20); // Network request started
+
+        try {
+          // Optimize for OCR.space limit (1MB) before sending
+          const optimizedForOCR = await prepareForOCR(croppedDataUrl);
+          const { text } = await performOCR(optimizedForOCR);
+          setOcrProgress(100);
+
+          if (text) {
+            const ocrResult = text.trim();
+            setFormData(prev => ({ ...prev, content: ocrResult }));
+            
+            setIsAiProcessing(true);
+            const aiResult = await processQuestionWithAI(ocrResult);
+            if (aiResult.knowledgePoints) {
+              setPendingKnowledgePoints(aiResult.knowledgePoints);
+            }
+            if (aiResult.field) {
+              setFormData(prev => ({ 
+                ...prev, 
+                field: Array.isArray(aiResult.field) ? aiResult.field : [aiResult.field as QuestionField],
+                answer: aiResult.answer || prev.answer,
+                explanation: aiResult.explanation || prev.explanation
+              }));
+            }
+            if (aiResult.usage?.total_tokens && user) {
+              trackTokens(Number(aiResult.usage.total_tokens), user.uid);
+            }
+          }
+        } catch (err) {
+          console.error('OCR failed:', err);
+          alert('OCR 识别失败，请检查网络或换一张更清晰的照片。');
+        } finally {
+          setIsOcrLoading(false);
+          setOcrProgress(0);
+        }
+      } else if (cropType === 'supp') {
+        setSupplementaryPreview(croppedDataUrl);
+      } else if (cropType === 'expl') {
+        setExplanationPreview(croppedDataUrl);
       }
-      alert(t('upload.ocrFail'));
+    } catch (err) {
+      console.error('Cropping failed:', err);
     } finally {
       setIsOcrLoading(false);
       setIsAiProcessing(false);
+      setImageToCrop(null);
     }
   };
 
   const onDropSupplementary = useCallback(async (acceptedFiles: File[]) => {
-    const selectedFile = acceptedFiles[0];
-    if (selectedFile) {
-      setSupplementaryFile(selectedFile);
-      try {
-        const compressedDataUrl = await compressImage(selectedFile);
-        setSupplementaryPreview(compressedDataUrl);
-      } catch (err) {
-        console.error('Compression failed:', err);
-      }
-    }
+    const file = acceptedFiles[0];
+    if (!file) return;
+    const dataUrl = await compressImage(file);
+    setImageToCrop(dataUrl);
+    setCropType('supp');
+    setIsCropping(true);
   }, []);
 
-  const { getRootProps: getTextRootProps, getInputProps: getTextHiddenInputProps, isDragActive: isTextDragActive } = useDropzone({
-    onDrop: onDropText,
-    accept: { 'image/*': [] },
-    multiple: false,
-    noClick: true, // Disable click on the root to handle buttons manually
-  });
+  const onDropExplanation = useCallback(async (acceptedFiles: File[]) => {
+    const file = acceptedFiles[0];
+    if (!file) return;
+    const dataUrl = await compressImage(file);
+    setImageToCrop(dataUrl);
+    setCropType('expl');
+    setIsCropping(true);
+  }, []);
 
-  const { getRootProps: getSuppRootProps, getInputProps: getSuppHiddenInputProps, isDragActive: isSuppDragActive } = useDropzone({
-    onDrop: onDropSupplementary,
-    accept: { 'image/*': [] },
-    multiple: false,
-    noClick: true, // Disable click on the root to handle buttons manually
-  });
+  const { getRootProps: getTextProps, getInputProps: getTextInputProps, isDragActive: textIsDragActive } = useDropzone({ onDrop: onDropText, accept: { 'image/*': [] }, multiple: false });
+  const { getRootProps: getSuppProps, getInputProps: getSuppInputProps, isDragActive: suppIsDragActive } = useDropzone({ onDrop: onDropSupplementary, accept: { 'image/*': [] }, multiple: false });
+  const { getRootProps: getExplProps, getInputProps: getExplInputProps, isDragActive: explIsDragActive } = useDropzone({ onDrop: onDropExplanation, accept: { 'image/*': [] }, multiple: false });
 
-  const { getRootProps: getExplanationRootProps, getInputProps: getExplanationHiddenInputProps, isDragActive: isExplanationDragActive } = useDropzone({
-    onDrop: onDropExplanation,
-    accept: { 'image/*': [] },
-    multiple: false,
-    noClick: true,
-  });
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>, callback: (files: File[]) => void) => {
-    if (e.target.files && e.target.files.length > 0) {
-      callback([e.target.files[0]]);
-    }
-  };
-
-  const handleOcr = async () => {
-    if (!textImagePreview) return;
-    setIsOcrLoading(true);
+  const handleCollectToKnowledgeBase = async (kp: { title: string; content: string }) => {
+    if (!user) return;
     try {
-      const keywords = await extractTextFromImage(textImagePreview);
-      setFormData(prev => ({ ...prev, content: keywords }));
+      await api.post('knowledgePoints', {
+        userId: user.uid,
+        ...kp,
+        level: 1,
+        mastered: false,
+        field: formData.field[0] || '其他'
+      });
+      alert(t('kb.collectSuccess'));
     } catch (err) {
-      console.error('OCR failed:', err);
-      alert(t('upload.ocrFail'));
-    } finally {
-      setIsOcrLoading(false);
+      console.error('Collection failed:', err);
+      alert(t('kb.collectFail'));
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!textImagePreview) {
-      alert(t('upload.noImageError'));
-      return;
-    }
-    if (!formData.content.trim()) {
-      alert(t('upload.noContentError'));
-      return;
-    }
-    if (formData.knowledgePoints.length === 0) {
-      alert(t('upload.noKpError'));
-      return;
-    }
-    if (formData.knowledgePoints.length > 3) {
-      alert(t('upload.tooManyKpsError'));
-      return;
-    }
-    
+    if (!user || !formData.content.trim()) return;
+
     setLoading(true);
     try {
-      if (isDemoMode) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        alert(t('edit.saveSuccessDemo'));
-        navigate('/');
-        return;
-      }
+      let textImageUrl = '';
+      let suppImageUrl = '';
+      let explImageUrl = '';
 
-      if (!auth.currentUser) {
-        setLoading(false);
-        return;
-      }
-      // Get next ID
-      const statsRef = doc(db, 'config', 'stats');
-      const statsSnap = await getDoc(statsRef);
-      let nextId = 1;
-      if (statsSnap.exists()) {
-        nextId = (statsSnap.data().questionCount || 0) + 1;
-      }
-      const formattedId = `U${String(nextId).padStart(4, '0')}`;
-
-      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      const userData = userDoc.data();
-      
-      const questionData = {
-        id: formattedId,
-        imageUrl: supplementaryPreview || null, // Only store supplementary image
-        ...formData,
-        createdBy: user?.uid || 'demo',
-        creatorStudentId: (isDemoMode ? 'demo' : user?.studentId) || '未知',
-        creatorNickname: (isDemoMode ? t('login.demo') : user?.nickname) || null,
-        createdAt: new Date().toISOString(),
+      // Helper to convert dataURL to File
+      const dataURLtoFile = (dataurl: string, filename: string) => {
+        const arr = dataurl.split(',');
+        const mime = arr[0].match(/:(.*?);/)![1];
+        const bstr = atob(arr[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) {
+          u8arr[n] = bstr.charCodeAt(n);
+        }
+        return new File([u8arr], filename, { type: mime });
       };
 
-      const docRef = doc(db, 'questions', formattedId);
-      await setDoc(docRef, questionData);
-      await setDoc(statsRef, { questionCount: increment(1) }, { merge: true });
-      
-      // Save confirmed knowledge points to the knowledge base
-      let newKpsCount = 0;
-      if (formData.knowledgePoints.length > 0) {
-        const batch = writeBatch(db);
-        const studentId = isDemoMode ? 'demo' : userData?.studentId;
-        for (const kp of formData.knowledgePoints) {
-          // Check for duplicates before adding to batch
-          const q = query(
-            collection(db, 'knowledgePoints'),
-            where('studentId', '==', studentId),
-            where('title', '==', kp.title)
-          );
-          const snapshot = await getDocs(q);
-          
-          if (snapshot.empty) {
-            newKpsCount++;
-            const kpRef = doc(collection(db, 'knowledgePoints'));
-            batch.set(kpRef, {
-              id: kpRef.id,
-              userId: auth.currentUser!.uid,
-              studentId: studentId,
-              questionId: formattedId,
-              field: formData.field[0] || '其他',
-              title: kp.title,
-              content: kp.content,
-              level: 1,
-              mastered: false,
-              createdAt: new Date().toISOString()
-            });
-          }
-        }
-        await batch.commit();
+      if (textImagePreview) {
+        const file = dataURLtoFile(textImagePreview, 'text.jpg');
+        const uploadRes = await api.storage.upload(file);
+        textImageUrl = uploadRes.url;
       }
 
-      // Update user stats
-      const userRef = doc(db, 'users', auth.currentUser.uid);
-      await updateDoc(userRef, {
-        questionsUploaded: increment(1),
-        kpsUploaded: increment(newKpsCount)
+      if (supplementaryPreview) {
+        const file = dataURLtoFile(supplementaryPreview, 'supp.jpg');
+        const uploadRes = await api.storage.upload(file);
+        suppImageUrl = uploadRes.url;
+      }
+
+      if (explanationPreview) {
+        const file = dataURLtoFile(explanationPreview, 'expl.jpg');
+        const uploadRes = await api.storage.upload(file);
+        explImageUrl = uploadRes.url;
+      }
+
+      const questionData = {
+        ...formData,
+        imageUrl: textImageUrl,
+        supplementaryImageUrl: suppImageUrl,
+        explanationImageUrl: explImageUrl,
+        createdBy: user.uid,
+        creatorStudentId: user.studentId,
+        creatorNickname: user.nickname || '',
+      };
+
+      const docRef = await api.post('questions', questionData);
+      
+      // Award points and update stats
+      await awardPoints(10, user.uid);
+      const latestUser = await api.get('users', user.uid);
+      await api.put('users', user.uid, {
+        questionsUploaded: (latestUser.questionsUploaded || 0) + 1
       });
 
-      // Award points for upload
-      await awardPoints(10);
-      
-      alert(t('upload.submitSuccess'));
+      // Automatically add knowledge points to user's knowledge base
+      for (const kp of formData.knowledgePoints) {
+        await api.post('knowledgePoints', {
+          userId: user.uid,
+          questionId: docRef.id,
+          ...kp,
+          level: 1,
+          mastered: false,
+          field: formData.field[0] || '其他'
+        });
+      }
+
+      alert(t('upload.success'));
       navigate('/');
     } catch (err) {
-      console.error(err);
-      alert(t('upload.submitFail'));
+      console.error('Submit failed:', err);
+      alert(t('upload.fail'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-5xl mx-auto space-y-10 pb-20">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="space-y-2"
-      >
-        <div className="flex items-center gap-3 text-[10px] font-black text-green-600 uppercase tracking-[0.3em]">
-          <div className="w-8 h-[2px] bg-green-600/30 rounded-full" />
-          <span>{t('upload.title')} · UPLOAD QUESTION</span>
+    <div className="max-w-4xl mx-auto space-y-10 py-6">
+      <div className="flex items-center gap-6">
+        <div className={`w-16 h-16 bg-green-600 rounded-[2rem] flex items-center justify-center shadow-2xl shadow-green-500/20 transition-transform duration-500 hover:scale-110 active:scale-95`}>
+          <Upload className="w-8 h-8 text-white" />
         </div>
-        <h1 className={`text-4xl font-black ${theme.text} tracking-tight transition-colors duration-1000`}>{t('upload.title')}</h1>
-        <p className={`${theme.subText} font-medium transition-colors duration-1000`}>{t('upload.subtitle')}</p>
-      </motion.div>
+        <div>
+          <h2 className={`text-3xl font-black ${theme.text} tracking-tight transition-colors duration-1000`}>{t('upload.title')}</h2>
+          <p className={`text-sm ${theme.subText} font-bold tracking-tight transition-colors duration-1000 uppercase opacity-60`}>Biology Question Management System</p>
+        </div>
+      </div>
 
-      <form onSubmit={handleSubmit} className="space-y-10">
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-10">
-          {/* Left: Image Uploads */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Text Image (Required) */}
+      <form onSubmit={handleSubmit} className="space-y-12">
+        <AnimatePresence>
+          {isCropping && imageToCrop && (
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className={`${theme.card} backdrop-blur-2xl rounded-[2.5rem] border-2 border-dashed ${isNight ? 'border-slate-800' : 'border-white/60'} p-6 text-center group hover:border-green-500/30 transition-all duration-1000`}
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[2000] bg-slate-950/90 backdrop-blur-xl flex flex-col items-center justify-center p-6"
             >
-              <h3 className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest mb-4 flex items-center justify-center gap-2`}>
-                <ImageIcon className="w-3 h-3 text-green-600" />
-                {t('upload.title')} ({t('common.finish')} · {t('common.next')})
-              </h3>
-              {!textImagePreview ? (
-                <div {...getTextRootProps()} className={`py-10 ${isTextDragActive ? 'bg-green-500/5' : ''} transition-colors duration-500`}>
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    capture="environment" 
-                    className="hidden" 
-                    ref={textCameraInputRef}
-                    onChange={(e) => handleFileInputChange(e, onDropText)}
-                  />
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    className="hidden" 
-                    ref={textGalleryInputRef}
-                    onChange={(e) => handleFileInputChange(e, onDropText)}
-                  />
-                  
-                  <div className="flex flex-col items-center gap-6">
-                    <div className="flex gap-4">
-                      <button
-                        type="button"
-                        onClick={() => textCameraInputRef.current?.click()}
-                        className={`w-16 h-16 ${isNight ? 'bg-green-500/10' : 'bg-green-50/50'} rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-500 shadow-sm`}
-                      >
-                        <Camera className="w-8 h-8 text-green-600" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => textGalleryInputRef.current?.click()}
-                        className={`w-16 h-16 ${isNight ? 'bg-slate-800' : 'bg-slate-100'} rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-500 shadow-sm`}
-                      >
-                        <FolderOpen className="w-8 h-8 text-slate-500" />
-                      </button>
-                    </div>
-                    <div className="space-y-1">
-                      <p className={`text-[10px] ${theme.subText} font-black uppercase tracking-widest`}>
-                        {isTextDragActive ? t('upload.releaseToSelect') : t('upload.clickOrDrag')}
-                      </p>
-                      <div className="flex justify-center gap-4 text-[8px] font-black uppercase tracking-widest opacity-40">
-                        <span>{t('upload.camera')}</span>
-                        <span>•</span>
-                        <span>{t('upload.gallery')}</span>
-                      </div>
-                    </div>
+              <div className="w-full max-w-4xl space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-black text-white">{t('upload.crop.title')}</h3>
+                    <p className="text-sm text-slate-400 font-medium">{t('upload.crop.desc')}</p>
                   </div>
+                  <button 
+                    onClick={() => setIsCropping(false)}
+                    className="p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-all"
+                  >
+                    <X className="w-6 h-6" />
+                  </button>
                 </div>
-              ) : (
-                <div className="relative group/preview">
-                  <img src={textImagePreview} alt="Text Preview" className={`max-h-[200px] mx-auto rounded-2xl border ${theme.border} transition-all duration-1000 ${isNight ? 'invert-[0.85] hue-rotate-180 brightness-110 contrast-110' : ''}`} />
-                  <div className="absolute -top-2 -right-2 flex gap-2">
-                    <button 
-                      type="button"
-                      onClick={() => { setTextImagePreview(null); setTextImageFile(null); }}
-                      className="bg-red-500 text-white p-2 rounded-xl hover:bg-red-600 transition-all active:scale-90 shadow-lg"
-                      title={t('upload.remove')}
-                    >
-                      <AlertCircle className="w-4 h-4" />
-                    </button>
-                  </div>
+
+                <div className="relative bg-black rounded-3xl overflow-hidden border border-white/10 min-h-[400px] flex items-center justify-center">
+                  <ReactCrop
+                    crop={crop}
+                    onChange={c => setCrop(c)}
+                    onComplete={c => setCompletedCrop(c)}
+                    className="max-h-[70vh]"
+                  >
+                    <img
+                      ref={cropImgRef}
+                      src={imageToCrop}
+                      alt="Crop area"
+                      style={{ maxWidth: '100%', height: 'auto', display: 'block' }}
+                      onLoad={(e) => {
+                        const { width, height } = e.currentTarget;
+                        const initialCrop = detectQuestionArea(e.currentTarget);
+                        setCrop(initialCrop);
+                      }}
+                    />
+                  </ReactCrop>
                 </div>
-              )}
+
+                <div className="flex justify-end gap-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                        if (cropImgRef.current) {
+                            setCrop(detectQuestionArea(cropImgRef.current));
+                        }
+                    }}
+                    className="px-6 py-4 bg-white/10 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-white/20 transition-all flex items-center gap-2"
+                  >
+                    <CropIcon className="w-4 h-4" />
+                    {t('upload.crop.autoDetect')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCropConfirm}
+                    className="px-10 py-4 bg-green-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-green-700 transition-all shadow-xl shadow-green-600/30 flex items-center gap-2"
+                  >
+                    <Check className="w-4 h-4" />
+                    {t('upload.crop.confirm')}
+                  </button>
+                </div>
+              </div>
             </motion.div>
+          )}
+        </AnimatePresence>
 
-            {/* Supplementary Image (Optional) */}
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.1 }}
-              className={`${theme.card} backdrop-blur-2xl rounded-[2.5rem] border-2 border-dashed ${isNight ? 'border-slate-800' : 'border-white/60'} p-6 text-center group hover:border-blue-500/30 transition-all duration-1000`}
-            >
-              <h3 className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest mb-4 flex items-center justify-center gap-2`}>
-                <ImageIcon className="w-3 h-3 text-blue-500" />
-                {t('upload.explanation')} ({t('upload.optional')})
-              </h3>
-              {!supplementaryPreview ? (
-                <div {...getSuppRootProps()} className={`py-10 ${isSuppDragActive ? 'bg-blue-500/5' : ''} transition-colors duration-500`}>
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    capture="environment" 
-                    className="hidden" 
-                    ref={suppCameraInputRef}
-                    onChange={(e) => handleFileInputChange(e, onDropSupplementary)}
-                  />
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    className="hidden" 
-                    ref={suppGalleryInputRef}
-                    onChange={(e) => handleFileInputChange(e, onDropSupplementary)}
-                  />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <ImageUploadCard
+            title={t('upload.textImage')}
+            preview={textImagePreview}
+            onRemove={() => setTextImagePreview(null)}
+            onCameraClick={() => textCameraInputRef.current?.click()}
+            onGalleryClick={() => textGalleryInputRef.current?.click()}
+            isDragActive={textIsDragActive}
+            dropzoneProps={getTextProps()}
+            isNight={isNight}
+            theme={theme}
+            iconColor="green"
+            bgColorClass="bg-green-500"
+          />
+          <ImageUploadCard
+            title={t('upload.supplementaryImage')}
+            preview={supplementaryPreview}
+            onRemove={() => setSupplementaryPreview(null)}
+            onCameraClick={() => suppCameraInputRef.current?.click()}
+            onGalleryClick={() => suppGalleryInputRef.current?.click()}
+            isDragActive={suppIsDragActive}
+            dropzoneProps={getSuppProps()}
+            isNight={isNight}
+            theme={theme}
+            iconColor="blue"
+            bgColorClass="bg-blue-500"
+          />
+          <ImageUploadCard
+            title={t('upload.explanationImage')}
+            preview={explanationPreview}
+            onRemove={() => setExplanationPreview(null)}
+            onCameraClick={() => explanationCameraInputRef.current?.click()}
+            onGalleryClick={() => explanationGalleryInputRef.current?.click()}
+            isDragActive={explIsDragActive}
+            dropzoneProps={getExplProps()}
+            isNight={isNight}
+            theme={theme}
+            iconColor="purple"
+            bgColorClass="bg-purple-500"
+          />
+          
+          {/* Hidden Inputs for Manual File Selection */}
+          <input type="file" ref={textCameraInputRef} className="hidden" accept="image/*" capture="environment" onChange={e => e.target.files && onDropText(Array.from(e.target.files))} />
+          <input type="file" ref={textGalleryInputRef} className="hidden" accept="image/*" onChange={e => e.target.files && onDropText(Array.from(e.target.files))} />
+          <input type="file" ref={suppCameraInputRef} className="hidden" accept="image/*" capture="environment" onChange={e => e.target.files && onDropSupplementary(Array.from(e.target.files))} />
+          <input type="file" ref={suppGalleryInputRef} className="hidden" accept="image/*" onChange={e => e.target.files && onDropSupplementary(Array.from(e.target.files))} />
+          <input type="file" ref={explanationCameraInputRef} className="hidden" accept="image/*" capture="environment" onChange={e => e.target.files && onDropExplanation(Array.from(e.target.files))} />
+          <input type="file" ref={explanationGalleryInputRef} className="hidden" accept="image/*" onChange={e => e.target.files && onDropExplanation(Array.from(e.target.files))} />
+        </div>
 
-                  <div className="flex flex-col items-center gap-6">
-                    <div className="flex gap-4">
-                      <button
-                        type="button"
-                        onClick={() => suppCameraInputRef.current?.click()}
-                        className={`w-16 h-16 ${isNight ? 'bg-blue-500/10' : 'bg-blue-50/50'} rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-500 shadow-sm`}
-                      >
-                        <Camera className="w-8 h-8 text-blue-500" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => suppGalleryInputRef.current?.click()}
-                        className={`w-16 h-16 ${isNight ? 'bg-slate-800' : 'bg-slate-100'} rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-500 shadow-sm`}
-                      >
-                        <FolderOpen className="w-8 h-8 text-slate-500" />
-                      </button>
-                    </div>
-                    <div className="space-y-1">
-                      <p className={`text-[10px] ${theme.subText} font-black uppercase tracking-widest`}>
-                        {isSuppDragActive ? t('upload.releaseToSelect') : t('upload.clickOrDrag')}
-                      </p>
-                      <div className="flex justify-center gap-4 text-[8px] font-black uppercase tracking-widest opacity-40">
-                        <span>{t('upload.camera')}</span>
-                        <span>•</span>
-                        <span>{t('upload.gallery')}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="relative group/preview">
-                  <img src={supplementaryPreview} alt="Supp Preview" className={`max-h-[200px] mx-auto rounded-2xl border ${theme.border} transition-all duration-1000 ${isNight ? 'invert-[0.85] hue-rotate-180 brightness-110 contrast-110' : ''}`} />
-                  <div className="absolute -top-2 -right-2">
-                    <button 
-                      type="button"
-                      onClick={() => { setSupplementaryPreview(null); setSupplementaryFile(null); }}
-                      className="bg-red-500 text-white p-2 rounded-xl hover:bg-red-600 transition-all active:scale-90 shadow-lg"
-                      title={t('upload.remove')}
-                    >
-                      <AlertCircle className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              )}
-            </motion.div>
-            {/* Explanation Image (Optional) */}
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.2 }}
-              className={`${theme.card} backdrop-blur-2xl rounded-[2.5rem] border-2 border-dashed ${isNight ? 'border-slate-800' : 'border-white/60'} p-6 text-center group hover:border-amber-500/30 transition-all duration-1000`}
-            >
-              <h3 className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest mb-4 flex items-center justify-center gap-2`}>
-                <ImageIcon className="w-3 h-3 text-amber-500" />
-                {t('upload.explanation')} ({t('upload.optional')} · {t('upload.autoOcr')})
-              </h3>
-              {!explanationPreview ? (
-                <div {...getExplanationRootProps()} className={`py-10 ${isExplanationDragActive ? 'bg-amber-500/5' : ''} transition-colors duration-500`}>
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    capture="environment" 
-                    className="hidden" 
-                    ref={explanationCameraInputRef}
-                    onChange={(e) => handleFileInputChange(e, onDropExplanation)}
-                  />
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    className="hidden" 
-                    ref={explanationGalleryInputRef}
-                    onChange={(e) => handleFileInputChange(e, onDropExplanation)}
-                  />
-
-                  <div className="flex flex-col items-center gap-6">
-                    <div className="flex gap-4">
-                      <button
-                        type="button"
-                        onClick={() => explanationCameraInputRef.current?.click()}
-                        className={`w-16 h-16 ${isNight ? 'bg-amber-500/10' : 'bg-amber-50/50'} rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-500 shadow-sm`}
-                      >
-                        <Camera className="w-8 h-8 text-amber-500" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => explanationGalleryInputRef.current?.click()}
-                        className={`w-16 h-16 ${isNight ? 'bg-slate-800' : 'bg-slate-100'} rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-500 shadow-sm`}
-                      >
-                        <FolderOpen className="w-8 h-8 text-slate-500" />
-                      </button>
-                    </div>
-                    <div className="space-y-1">
-                      <p className={`text-[10px] ${theme.subText} font-black uppercase tracking-widest`}>
-                        {isExplanationDragActive ? t('upload.releaseToSelect') : t('upload.clickOrDrag')}
-                      </p>
-                      <div className="flex justify-center gap-4 text-[8px] font-black uppercase tracking-widest opacity-40">
-                        <span>{t('upload.camera')}</span>
-                        <span>•</span>
-                        <span>{t('upload.gallery')}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="relative group/preview">
-                  <img src={explanationPreview} alt="Explanation Preview" className={`max-h-[200px] mx-auto rounded-2xl border ${theme.border} transition-all duration-1000 ${isNight ? 'invert-[0.85] hue-rotate-180 brightness-110 contrast-110' : ''}`} />
-                  <div className="absolute -top-2 -right-2">
-                    <button 
-                      type="button"
-                      onClick={() => { setExplanationPreview(null); setExplanationFile(null); }}
-                      className="bg-red-500 text-white p-2 rounded-xl hover:bg-red-600 transition-all active:scale-90 shadow-lg"
-                      title={t('upload.remove')}
-                    >
-                      <AlertCircle className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              )}
-            </motion.div>
-
-            {/* Start Recognition Button */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-              className="space-y-3"
-            >
-              <p className={`text-xs text-center font-medium ${theme.subText}`}>
-                {t('upload.aiHint')}
-              </p>
-              <button
-                type="button"
-                onClick={handleStartRecognition}
-                disabled={!textImagePreview || isOcrLoading || isAiProcessing}
-                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-indigo-700 transition-all active:scale-95 shadow-lg shadow-indigo-500/20 disabled:opacity-50 disabled:hover:bg-indigo-600 flex items-center justify-center gap-2"
-              >
-                {isOcrLoading || isAiProcessing ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    {t('upload.aiAnalyzing')}
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    {t('upload.aiAnalyzing')}
-                  </>
-                )}
-              </button>
-            </motion.div>
-          </div>
-
-          {/* Right: Metadata */}
-          <div className={`lg:col-span-3 ${theme.card} backdrop-blur-2xl rounded-[3rem] border ${theme.border} p-10 space-y-8 transition-all duration-1000`}>
-            <div className="grid grid-cols-2 gap-6">
-              <div className="space-y-2">
+        <div className={`${theme.card} backdrop-blur-2xl rounded-[3rem] p-10 space-y-12 transition-all duration-1000 border border-white/10`}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+            <div className="space-y-8">
+              <div className="space-y-3">
                 <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.field')}</label>
-                <div className="flex flex-wrap gap-2 p-2">
-                  {['生物化学', '细胞生物学', '植物学', '动物学', '微生物学', '动物生理学', '植物生理学', '其他'].map((f) => (
+                <div className="flex flex-wrap gap-2">
+                  {['生物化学', '细胞生物学', '植物学', '动物学', '微生物学', '动物生理学', '植物生理学', '其他'].map(field => (
                     <button
-                      key={f}
+                      key={field}
                       type="button"
                       onClick={() => {
-                        const current = formData.field as QuestionField[];
-                        const next = current.includes(f as QuestionField)
-                          ? current.filter(item => item !== f)
-                          : [...current, f as QuestionField];
-                        setFormData({ ...formData, field: next });
+                        const newFields = formData.field.includes(field as any)
+                          ? formData.field.filter(f => f !== field)
+                          : [...formData.field, field as QuestionField];
+                        setFormData({ ...formData, field: newFields });
                       }}
-                      className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${
-                        (formData.field as QuestionField[]).includes(f as QuestionField)
-                          ? 'bg-green-600 text-white border-green-500'
-                          : `${isNight ? 'bg-slate-800 text-slate-400 border-slate-700' : 'bg-slate-100 text-slate-500 border-slate-200'}`
+                      className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all duration-300 active:scale-95 ${
+                        formData.field.includes(field as any)
+                          ? 'bg-green-600 text-white shadow-lg shadow-green-500/20'
+                          : `${theme.mutedBg} ${theme.subText} hover:${theme.text} border ${theme.border}`
                       }`}
                     >
-                      {t(`enum.field.${f}`)}
+                      {field}
                     </button>
                   ))}
                 </div>
               </div>
-              <div className="space-y-2">
-                <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.source')}</label>
-                <select 
-                  value={formData.source}
-                  onChange={e => setFormData({...formData, source: e.target.value as QuestionSource})}
-                  className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all duration-1000`}
-                  required
-                >
-                  {['猿辅导', '汇智启航', '北斗学友', '联赛题', '国赛题', '愿程', '其他'].map(s => (
-                    <option key={s} value={s}>{t(`enum.source.${s}`)}</option>
-                  ))}
-                </select>
+
+              <div className="grid grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.source')}</label>
+                  <select 
+                    value={formData.source}
+                    onChange={e => setFormData({...formData, source: e.target.value as QuestionSource})}
+                    className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all duration-1000`}
+                  >
+                    {['猿辅导', '汇智启航', '北斗学友', '联赛题', '国赛题', '愿程', '其他'].map(source => (
+                      <option key={source} value={source}>{source}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-3">
+                  <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.sourceDetail')}</label>
+                  <input 
+                    type="text"
+                    value={formData.sourceDetail}
+                    onChange={e => setFormData({...formData, sourceDetail: e.target.value})}
+                    placeholder={t('upload.sourceDetailPlaceholder')}
+                    className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all duration-1000`}
+                  />
+                </div>
               </div>
             </div>
-            <div className="space-y-2">
-              <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.source')}</label>
-              <input 
-                type="text"
-                value={formData.sourceDetail}
-                onChange={e => setFormData({...formData, sourceDetail: e.target.value})}
-                placeholder={t('upload.source')}
-                className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all duration-1000`}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-6">
-              <div className="space-y-2">
+
+            <div className="space-y-8">
+              <div className="space-y-3">
                 <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.difficulty')}</label>
-                <div className="flex gap-4 px-2 py-3">
-                  {['易错题', '难题'].map((diff) => (
-                    <label key={diff} className="flex items-center gap-3 cursor-pointer group">
-                      <input 
-                        type="checkbox"
-                        checked={formData.difficulty.includes(diff as QuestionDifficulty)}
-                        onChange={(e) => {
-                          const newDifficulty = e.target.checked 
-                            ? [...formData.difficulty, diff as QuestionDifficulty]
-                            : formData.difficulty.filter(d => d !== diff);
-                          setFormData({...formData, difficulty: newDifficulty});
-                        }}
-                        className="hidden"
-                      />
-                      <div className={`w-6 h-6 rounded-xl border-2 flex items-center justify-center transition-all ${
-                        formData.difficulty.includes(diff as QuestionDifficulty)
-                          ? 'bg-green-600 border-green-600 shadow-lg shadow-green-500/20'
-                          : `${isNight ? 'border-slate-700 bg-slate-800/50' : 'border-slate-200 bg-white/50'}`
-                      }`}>
-                        {formData.difficulty.includes(diff as QuestionDifficulty) && <CheckCircle2 className="w-4 h-4 text-white" />}
-                      </div>
-                      <span className={`text-sm font-bold ${formData.difficulty.includes(diff as QuestionDifficulty) ? theme.text : theme.subText} transition-colors`}>
-                        {t(`enum.diff.${diff}`)}
-                      </span>
-                    </label>
+                <div className="flex gap-4">
+                  {['难题', '易错题'].map(diff => (
+                    <button
+                      key={diff}
+                      type="button"
+                      onClick={() => {
+                        const newDiffs = formData.difficulty.includes(diff as any)
+                          ? formData.difficulty.filter(d => d !== diff)
+                          : [...formData.difficulty, diff as QuestionDifficulty];
+                        setFormData({ ...formData, difficulty: newDiffs });
+                      }}
+                      className={`flex-1 py-4 rounded-2xl text-sm font-bold transition-all duration-300 active:scale-95 border ${
+                        formData.difficulty.includes(diff as any)
+                          ? 'bg-amber-500 border-amber-600 text-white'
+                          : `${theme.mutedBg} ${theme.subText} ${theme.border}`
+                      }`}
+                    >
+                      {t(`enum.diff.${diff}`)}
+                    </button>
                   ))}
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.type')}</label>
                 <select 
                   value={formData.type}
@@ -803,213 +613,88 @@ export default function UploadQuestion({ user }: { user: User | null }) {
                 </select>
               </div>
             </div>
-            {/* Knowledge Points Section */}
-            <div className="space-y-6">
-              {/* Confirmed Knowledge Points */}
-              {formData.knowledgePoints.length > 0 && (
-                <div className="space-y-4 p-6 bg-green-500/5 rounded-[2rem] border border-green-500/20">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-[10px] font-black text-green-600 uppercase tracking-widest">
-                      <CheckCircle2 className="w-3 h-3" />
-                      {t('upload.confirmKps')} ({formData.knowledgePoints.length})
-                    </div>
-                    {formData.knowledgePoints.length < 3 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const newKp = { title: '', content: '' };
-                          // Avoid adding if last one is empty
-                          const lastKp = formData.knowledgePoints[formData.knowledgePoints.length - 1];
-                          if (lastKp && !lastKp.title.trim() && !lastKp.content.trim()) return;
-                          
-                          setFormData(prev => ({
-                            ...prev,
-                            knowledgePoints: [...prev.knowledgePoints, newKp]
-                          }));
-                        }}
-                        className="text-[10px] font-black text-green-600 uppercase tracking-widest hover:text-green-700 transition-all"
-                      >
-                        + {t('upload.addKp')}
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-1 gap-3">
-                    {formData.knowledgePoints.map((kp, idx) => (
-                      <div key={idx} className={`p-4 rounded-2xl border ${isNight ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-100'} flex flex-col gap-2 group`}>
-                        <div className="flex justify-between items-start">
-                          <input
-                            type="text"
-                            value={kp.title}
-                            onChange={(e) => {
-                              const newKps = [...formData.knowledgePoints];
-                              newKps[idx].title = e.target.value;
-                              setFormData(prev => ({ ...prev, knowledgePoints: newKps }));
-                            }}
-                            placeholder={t('upload.knowledgePoints')}
-                            className={`w-full bg-transparent border-b ${isNight ? 'border-slate-700 focus:border-green-500' : 'border-slate-200 focus:border-green-500'} outline-none text-xs font-black ${theme.text} pb-1 transition-colors`}
-                          />
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              setFormData(prev => ({
-                                ...prev,
-                                knowledgePoints: prev.knowledgePoints.filter((_, i) => i !== idx)
-                              }));
-                            }}
-                            className="p-1 text-red-500 opacity-0 group-hover:opacity-100 transition-all ml-2"
-                          >
-                            <RefreshCw className="w-3 h-3 rotate-45" />
-                          </button>
-                        </div>
-                        <input
-                          type="text"
-                          value={kp.content}
-                          onChange={(e) => {
-                            const newKps = [...formData.knowledgePoints];
-                            newKps[idx].content = e.target.value;
-                            setFormData(prev => ({ ...prev, knowledgePoints: newKps }));
-                          }}
-                          placeholder={t('upload.content')}
-                          className={`w-full bg-transparent border-b ${isNight ? 'border-slate-700 focus:border-green-500' : 'border-slate-200 focus:border-green-500'} outline-none text-[10px] font-bold ${theme.subText} pb-1 transition-colors`}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+          </div>
 
-              {/* Pending AI Suggestions */}
-              {(pendingKnowledgePoints.length > 0 || isAiProcessing) && (
-                <div className="space-y-4 p-6 bg-amber-500/5 rounded-[2rem] border border-amber-500/20">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-[10px] font-black text-amber-600 uppercase tracking-widest">
-                      <Sparkles className="w-3 h-3" />
-                      {t('upload.aiAnalyzing')} ({t('common.confirm')})
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFormData(prev => {
-                            const combined = [...prev.knowledgePoints, ...pendingKnowledgePoints];
-                            const unique = combined.filter((kp, index, self) =>
-                              index === self.findIndex((t) => t.title === kp.title)
-                            );
-                            return {
-                              ...prev,
-                              knowledgePoints: unique
-                            };
-                          });
-                          setPendingKnowledgePoints([]);
-                        }}
-                        disabled={isAiProcessing || pendingKnowledgePoints.length === 0}
-                        className="text-[10px] font-black text-green-600 uppercase tracking-widest hover:text-green-700 transition-all disabled:opacity-50"
-                      >
-                        {t('common.confirm')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleRegenerateKps}
-                        disabled={isAiProcessing}
-                        className="flex items-center gap-2 text-[10px] font-black text-amber-600 uppercase tracking-widest hover:text-amber-700 transition-all disabled:opacity-50"
-                      >
-                        <RefreshCw className={`w-3 h-3 ${isAiProcessing ? 'animate-spin' : ''}`} />
-                        {t('common.edit')}
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 gap-3">
-                    {isAiProcessing ? (
-                      <div className="py-10 flex flex-col items-center gap-3">
-                        <Loader2 className="w-6 h-6 text-amber-500 animate-spin" />
-                        <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest">{t('upload.aiAnalyzing')}</span>
-                      </div>
-                    ) : (
-                      pendingKnowledgePoints.map((kp, idx) => (
-                        <div key={idx} className={`p-4 rounded-2xl border ${isNight ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-slate-100'} flex justify-between items-center relative overflow-hidden`}>
-                          {kpLoadingStates[idx] && (
-                            <div className="absolute inset-0 bg-white/50 dark:bg-slate-900/50 backdrop-blur-[1px] flex items-center justify-center z-10">
-                              <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
-                            </div>
-                          )}
-                          <div className="flex-1">
-                            <p className={`text-xs font-black ${theme.text}`}>{kp.title}</p>
-                            <p className={`text-[10px] font-bold ${theme.subText} mt-1`}>{t('upload.answer')}: {kp.content}</p>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleCollectToKnowledgeBase(kp)}
-                              className="p-2 text-blue-500 hover:bg-blue-50 rounded-xl transition-all"
-                              title={t('nav.knowledge')}
-                            >
-                              <Brain className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRegenerateSingleKp(idx)}
-                              disabled={kpLoadingStates[idx]}
-                              className="p-2 text-amber-500 hover:bg-amber-50 rounded-xl transition-all"
-                              title={t('common.edit')}
-                            >
-                              <RefreshCw className={`w-3 h-3 ${kpLoadingStates[idx] ? 'animate-spin' : ''}`} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (formData.knowledgePoints.length >= 3) {
-                                  alert(t('common.error'));
-                                  return;
-                                }
-                                setFormData(prev => ({
-                                  ...prev,
-                                  knowledgePoints: [...prev.knowledgePoints, kp]
-                                }));
-                                setPendingKnowledgePoints(prev => prev.filter((_, i) => i !== idx));
-                              }}
-                              className="px-4 py-2 bg-green-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-green-700 transition-all"
-                            >
-                              {t('common.confirm')}
-                            </button>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-              
-              {!isAiProcessing && pendingKnowledgePoints.length === 0 && formData.content.trim() && (
-                <div className="flex gap-4">
-                  <button
-                    type="button"
-                    onClick={handleRegenerateKps}
-                    className={`flex-1 py-4 border-2 border-dashed ${isNight ? 'border-slate-800' : 'border-slate-200'} rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black ${theme.subText} uppercase tracking-widest hover:border-green-500/30 hover:text-green-600 transition-all`}
-                  >
-                    <Brain className="w-4 h-4" />
-                    {t('upload.aiAnalyzing')}
-                  </button>
-                  {formData.knowledgePoints.length < 3 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData(prev => ({
-                          ...prev,
-                          knowledgePoints: [...prev.knowledgePoints, { title: '', content: '' }]
-                        }));
-                      }}
-                      className={`flex-1 py-4 border-2 border-dashed ${isNight ? 'border-slate-800' : 'border-slate-200'} rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black ${theme.subText} uppercase tracking-widest hover:border-green-500/30 hover:text-green-600 transition-all`}
-                    >
-                      <Plus className="w-4 h-4" />
-                      {t('upload.addKp')}
-                    </button>
-                  )}
-                </div>
+          {/* AI Knowledge Point Section */}
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <h3 className={`text-[10px] font-black ${theme.subText} uppercase tracking-[0.2em] flex items-center gap-3`}>
+                <Sparkles className="w-4 h-4 text-indigo-500" />
+                {t('upload.aiAnalyzing')}
+              </h3>
+              {!isAiProcessing && formData.content.trim() && (
+                <button
+                  type="button"
+                  onClick={handleRegenerateKps}
+                  className="flex items-center gap-2 text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:text-indigo-700 transition-all"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  {t('common.edit')}
+                </button>
               )}
             </div>
 
-            <div className="space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {isAiProcessing ? (
+                <div className={`col-span-full py-12 flex flex-col items-center gap-4 ${theme.mutedBg} rounded-3xl border border-dashed ${theme.border}`}>
+                  <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
+                  <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest animate-pulse`}>AI正在提取核心知识点...</p>
+                </div>
+              ) : (
+                <>
+                  <AnimatePresence>
+                    {pendingKnowledgePoints.map((kp, idx) => (
+                      <motion.div
+                        key={`pending-${idx}-${kp.title}`}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                      >
+                        <KPPreviewCard
+                          kp={kp}
+                          index={idx}
+                          isLoading={kpLoadingStates[idx]}
+                          onRegenerate={handleRegenerateSingleKp}
+                          onCollect={handleCollectToKnowledgeBase}
+                          theme={theme}
+                        />
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                  
+                  {pendingKnowledgePoints.length === 0 && !formData.content.trim() && (
+                    <div className={`col-span-full py-12 flex flex-col items-center gap-3 ${theme.mutedBg} rounded-3xl border border-dashed ${theme.border} opacity-40`}>
+                      <Brain className={`w-8 h-8 ${theme.subText}`} />
+                      <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>上传图片后将自动分析知识点</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            
+            {/* Confirmed KPs */}
+            {formData.knowledgePoints.length > 0 && (
+              <div className="space-y-4">
+                <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest flex items-center gap-2`}>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                  已准备关联的知识点
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {formData.knowledgePoints.map((kp, idx) => (
+                    <div key={idx} className="bg-green-500/10 text-green-600 px-4 py-2 rounded-xl text-xs font-bold border border-green-500/20 flex items-center gap-2">
+                       {kp.title}
+                       <button onClick={() => setFormData(prev => ({ ...prev, knowledgePoints: prev.knowledgePoints.filter((_, i) => i !== idx) }))}>
+                         <RefreshCw className="w-3 h-3 rotate-45" />
+                       </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-6">
+            <div className="space-y-3">
               <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.content')}</label>
               <div className="relative">
                 <textarea 
@@ -1017,57 +702,82 @@ export default function UploadQuestion({ user }: { user: User | null }) {
                   onChange={e => setFormData({...formData, content: e.target.value})}
                   rows={6}
                   placeholder={t('upload.content')}
-                  className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all resize-none duration-1000`}
+                  className={`w-full px-8 py-6 ${theme.input} rounded-[2rem] focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all resize-none duration-1000 leading-relaxed`}
                 />
                 {(isOcrLoading || isAiProcessing) && (
-                  <div className="absolute inset-0 bg-slate-950/20 backdrop-blur-sm rounded-2xl flex items-center justify-center">
-                    <div className="flex flex-col items-center gap-3">
-                      <Loader2 className="w-8 h-8 text-green-600 animate-spin" />
-                      <span className="text-[10px] font-black text-green-600 uppercase tracking-widest">
-                        {isAiProcessing ? t('upload.aiAnalyzing') : t('upload.ocrProcessing')}
+                  <div className="absolute inset-0 bg-slate-950/20 backdrop-blur-sm rounded-[2rem] flex items-center justify-center z-20">
+                    <div className="flex flex-col items-center gap-4">
+                      {isOcrLoading ? (
+                        <div className="relative flex items-center justify-center">
+                          <svg className="w-20 h-20 -rotate-90">
+                            <circle cx="40" cy="40" r="36" className="fill-none stroke-white/20 stroke-[4]" />
+                            <circle 
+                              cx="40" cy="40" r="36" 
+                              className="fill-none stroke-green-600 stroke-[4] transition-all duration-300" 
+                              strokeDasharray={226}
+                              strokeDashoffset={226 - (226 * ocrProgress) / 100}
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                          <span className="absolute text-[10px] font-black text-green-600">{Math.round(ocrProgress)}%</span>
+                        </div>
+                      ) : (
+                        <Loader2 className="w-10 h-10 text-green-600 animate-spin" />
+                      )}
+                      <span className="text-[10px] font-black text-green-600 uppercase tracking-widest bg-white/90 px-4 py-2 rounded-xl shadow-xl">
+                        {isAiProcessing ? t('upload.aiAnalyzing') : (ocrProgress === 0 ? t('upload.ocr.initializing') : t('upload.ocrProcessing'))}
                       </span>
                     </div>
                   </div>
                 )}
               </div>
             </div>
-            <div className="space-y-2">
-              <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.answer')} ({t('upload.optional')})</label>
-              <input 
-                type="text"
-                value={formData.answer}
-                onChange={e => setFormData({...formData, answer: e.target.value})}
-                className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all duration-1000`}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.explanation')} ({t('upload.optional')})</label>
-              <textarea 
-                value={formData.explanation}
-                onChange={e => setFormData({...formData, explanation: e.target.value})}
-                rows={3}
-                className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all resize-none duration-1000`}
-              />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-3">
+                <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.answer')} ({t('upload.optional')})</label>
+                <input 
+                  type="text"
+                  value={formData.answer}
+                  onChange={e => setFormData({...formData, answer: e.target.value})}
+                  className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all duration-1000`}
+                />
+              </div>
+              <div className="space-y-3">
+                <label className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>{t('upload.explanation')} ({t('upload.optional')})</label>
+                <textarea 
+                  value={formData.explanation}
+                  onChange={e => setFormData({...formData, explanation: e.target.value})}
+                  rows={1}
+                  className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-green-500/5 outline-none text-sm font-bold transition-all resize-none duration-1000`}
+                />
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="flex justify-end gap-6">
-          <button
-            type="button"
-            onClick={() => navigate('/')}
-            className={`px-10 py-5 ${theme.card} ${theme.subText} rounded-2xl font-black text-[10px] uppercase tracking-widest hover:${theme.text} transition-all active:scale-95 duration-1000`}
-          >
-            {t('common.cancel')}
-          </button>
-          <button
-            type="submit"
-            disabled={loading || !textImagePreview || !formData.content.trim()}
-            className="flex items-center justify-center gap-3 px-12 py-5 bg-green-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] hover:bg-green-700 transition-all disabled:opacity-50 active:scale-95"
-          >
-            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
-            {loading ? t('common.loading') : t('upload.submit')}
-          </button>
+        <div className="flex items-center justify-between pt-6 border-t border-white/5">
+          <div className="flex items-center gap-2">
+             <AlertCircle className={`w-4 h-4 ${theme.subText}`} />
+             <p className={`text-[10px] ${theme.subText} font-black uppercase tracking-widest`}>请核对AI提取内容，确保知识点准确性</p>
+          </div>
+          <div className="flex gap-4">
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              className={`px-10 py-5 ${theme.card} ${theme.subText} rounded-2xl font-black text-[10px] uppercase tracking-widest hover:${theme.text} transition-all active:scale-95 duration-1000 border border-white/5`}
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !textImagePreview || !formData.content.trim()}
+              className="flex items-center justify-center gap-3 px-14 py-5 bg-green-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] hover:bg-green-700 transition-all disabled:opacity-50 active:scale-95 shadow-xl shadow-green-600/20"
+            >
+              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
+              {loading ? t('common.loading') : t('upload.submit')}
+            </button>
+          </div>
         </div>
       </form>
     </div>

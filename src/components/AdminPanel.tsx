@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
-import { db, auth, isDemoMode } from '../firebase';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, query, orderBy, updateDoc, where, getDocs, writeBatch } from 'firebase/firestore';
+import { api } from '../lib/api';
 import { AllowedStudent, User, BirthdaySettings } from '../types';
 import { UserPlus, Trash2, Users, ShieldCheck, Loader2, Plus, UserCheck, ShieldPlus, Cake, Save, ToggleLeft, ToggleRight, Calendar, X, Sparkles, Mountain, Edit3 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useTheme } from '../hooks/useTheme';
 import { useLanguage } from '../contexts/LanguageContext';
+import { VERSION } from '../version';
 
 export default function AdminPanel({ currentUser }: { currentUser: User | null }) {
   const { isNight, theme } = useTheme();
@@ -33,91 +33,109 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
     isEnabled: false
   });
   const [isSavingQidan, setIsSavingQidan] = useState(false);
+
+  // Art Settings State
+  const [artSettings, setArtSettings] = useState({ isEnabled: false });
+  const [isSavingArt, setIsSavingArt] = useState(false);
+
   const [newPermanentId, setNewPermanentId] = useState('');
   const [isUpdatingPermanentId, setIsUpdatingPermanentId] = useState(false);
   const [showPermanentIdConfirm, setShowPermanentIdConfirm] = useState(false);
+  const [aiStatus, setAiStatus] = useState<{ 
+    aiReady: boolean; 
+    ocrReady: boolean; 
+    nodeVersion: string; 
+    platform: string; 
+    memoryUsage: string; 
+    uptime: string;
+  } | null>(null);
+
+  const [isTestingApi, setIsTestingApi] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const handleTestApi = async () => {
+    setIsTestingApi(true);
+    setTestResult(null);
+    try {
+      const aiRes = await fetch('/api/ai/process-question', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ocrText: '测试题目：1+1=？' })
+      });
+      
+      if (!aiRes.ok) {
+        const err = await aiRes.json() as any;
+        throw new Error(`AI 测试失败: ${err.error || err.details || '未知错误'}`);
+      }
+      
+      setTestResult('AI API 测试通过！OCR 建议通过上传图片实测。');
+    } catch (err) {
+      setTestResult(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsTestingApi(false);
+    }
+  };
 
   useEffect(() => {
-    if (isDemoMode) {
-      // ... existing demo data ...
-      setAllowedStudents([
-        { studentId: '1357924680', addedBy: 'system', addedAt: new Date().toISOString() }
-      ]);
-      setUsers([
-        { uid: 'demo-admin', studentId: '1357924680', nickname: 'SYSTEM', role: 'admin', createdAt: new Date().toISOString() }
-      ]);
-      setLoading(false);
-      return;
-    }
-
-    // Fetch Birthday Settings
-    const unsubBirthday = onSnapshot(doc(db, 'settings', 'birthday'), (snapshot) => {
-      if (snapshot.exists()) {
-        setBirthdaySettings(snapshot.data() as BirthdaySettings);
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch('/api/system/status');
+        const data = await res.json() as any;
+        setAiStatus(data);
+      } catch (err) {
+        console.error("Error fetching system status:", err);
       }
-    });
+    };
+    fetchStatus();
+  }, []);
 
-    // Fetch Qidan Settings
-    const unsubQidan = onSnapshot(doc(db, 'settings', 'qidan'), (snapshot) => {
-      if (snapshot.exists()) {
-        setQidanSettings(snapshot.data() as BirthdaySettings);
-      }
-    });
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        // Birthday Settings
+        const birthday = await api.get('settings', 'birthday');
+        if (birthday) setBirthdaySettings(birthday);
 
-    const qAllowed = query(collection(db, 'allowedStudents'), orderBy('addedAt', 'desc'));
-    // ... existing subscriptions ...
-    const unsubscribeAllowed = onSnapshot(qAllowed, 
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => doc.data() as AllowedStudent);
-        setAllowedStudents(data);
-      },
-      (error) => {
-        console.error("Error fetching allowed students:", error);
-        setLoading(false);
-      }
-    );
+        // Qidan Settings
+        const qidan = await api.get('settings', 'qidan');
+        if (qidan) setQidanSettings(qidan);
 
-    const qUsers = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
-    const unsubscribeUsers = onSnapshot(qUsers, 
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => doc.data() as User);
+        // Art Settings
+        const art = await api.get('settings', 'art');
+        if (art) setArtSettings(art);
+
+        // Allowed Students
+        const allowed = await api.get('allowedStudents');
+        setAllowedStudents(allowed);
+
+        // Users
+        const usersData = await api.get('users');
         const uniqueUsers: User[] = [];
         const seenIds = new Set<string>();
-        for (const u of data) {
+        for (const u of usersData) {
           if (!seenIds.has(u.studentId)) {
-            // Hide permanent admin from normal admins
-            if (!isPermanentAdmin && u.studentId === '1357924680') {
-              continue;
-            }
+            if (!isPermanentAdmin && u.studentId === '1357924680') continue;
             seenIds.add(u.studentId);
             uniqueUsers.push(u);
           }
         }
         setUsers(uniqueUsers);
-        setLoading(false);
-      },
-      (error) => {
-        console.error("Error fetching users:", error);
+      } catch (err) {
+        console.error("Error fetching admin data:", err);
+      } finally {
         setLoading(false);
       }
-    );
-
-    return () => {
-      unsubBirthday();
-      unsubQidan();
-      unsubscribeAllowed();
-      unsubscribeUsers();
     };
-  }, []);
+
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
+  }, [isPermanentAdmin]);
 
   const handleSaveBirthday = async () => {
-    if (isDemoMode) {
-      alert(t('admin.demoError'));
-      return;
-    }
     setIsSavingBirthday(true);
     try {
-      await setDoc(doc(db, 'settings', 'birthday'), birthdaySettings);
+      await api.put('settings', 'birthday', birthdaySettings);
       alert(t('admin.saveSuccess'));
     } catch (err) {
       console.error("Error saving birthday settings:", err);
@@ -128,13 +146,9 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
   };
 
   const handleSaveQidan = async () => {
-    if (isDemoMode) {
-      alert(t('admin.demoError'));
-      return;
-    }
     setIsSavingQidan(true);
     try {
-      await setDoc(doc(db, 'settings', 'qidan'), qidanSettings);
+      await api.put('settings', 'qidan', qidanSettings);
       alert(t('admin.saveSuccess'));
     } catch (err) {
       console.error("Error saving qidan settings:", err);
@@ -144,42 +158,42 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
     }
   };
 
+  const handleSaveArt = async () => {
+    setIsSavingArt(true);
+    try {
+      await api.put('settings', 'art', artSettings);
+      alert(t('admin.saveSuccess'));
+    } catch (err) {
+      console.error("Error saving art settings:", err);
+      alert(t('admin.saveFail'));
+    } finally {
+      setIsSavingArt(false);
+    }
+  };
+
   const handleUpdatePermanentId = async () => {
     if (!newPermanentId.trim() || isUpdatingPermanentId) return;
-    if (isDemoMode) {
-      alert(t('admin.demoError'));
-      return;
-    }
 
     setIsUpdatingPermanentId(true);
     try {
       const oldId = '1357924680';
       const newId = newPermanentId.trim();
 
-      // 1. Add new ID to allowedStudents
-      await setDoc(doc(db, 'allowedStudents', newId), {
+      await api.post('allowedStudents', {
+        id: newId,
         studentId: newId,
         addedBy: 'system-permanent-update',
         addedAt: new Date().toISOString()
       });
 
-      // 2. Update all user documents with the old ID
-      const q = query(collection(db, 'users'), where('studentId', '==', oldId));
-      const snap = await getDocs(q);
-      
-      if (!snap.empty) {
-        const batch = writeBatch(db);
-        snap.docs.forEach(d => {
-          batch.update(d.ref, { studentId: newId });
-        });
-        await batch.commit();
+      const usersToUpdate = users.filter(u => u.studentId === oldId);
+      for (const u of usersToUpdate) {
+        await api.put('users', u.uid, { studentId: newId });
       }
 
-      // 3. Remove old ID from allowedStudents (optional, but cleaner)
-      await deleteDoc(doc(db, 'allowedStudents', oldId));
+      await api.delete('allowedStudents', oldId);
 
       alert(t('admin.saveSuccess'));
-      // Force logout or re-login might be needed, but for now just refresh
       window.location.reload();
     } catch (err) {
       console.error("Error updating permanent admin ID:", err);
@@ -194,36 +208,20 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
     if (!batchInput.trim() || submitting) return;
     setSubmitting(true);
     try {
-      // Split by Chinese period or standard period or newline
       const parts = batchInput.split(/[。.\n]/).filter(p => p.trim());
-      const batch = isDemoMode ? null : writeBatch(db);
       const now = new Date().toISOString();
-      const creator = auth.currentUser?.uid || 'unknown';
-
-      const newEntries: AllowedStudent[] = [];
 
       for (const part of parts) {
-        // Split by Chinese colon or standard colon
         const [nickname, studentId] = part.split(/[:：]/).map(s => s.trim());
         if (nickname && studentId) {
-          if (isDemoMode) {
-            newEntries.push({ studentId, nickname, addedBy: creator, addedAt: now });
-          } else {
-            const docRef = doc(db, 'allowedStudents', studentId);
-            batch!.set(docRef, {
-              studentId,
-              nickname,
-              addedBy: creator,
-              addedAt: now
-            });
-          }
+          await api.post('allowedStudents', {
+            id: studentId,
+            studentId,
+            nickname,
+            addedBy: currentUser?.uid || 'unknown',
+            addedAt: now
+          });
         }
-      }
-
-      if (isDemoMode) {
-        setAllowedStudents(prev => [...newEntries, ...prev]);
-      } else {
-        await batch!.commit();
       }
       
       setBatchInput('');
@@ -243,20 +241,10 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
 
     setSubmitting(true);
     try {
-      if (isDemoMode) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        setAllowedStudents(prev => [{
-          studentId: newStudentId.trim(),
-          addedBy: 'demo-admin',
-          addedAt: new Date().toISOString()
-        }, ...prev]);
-        setNewStudentId('');
-        return;
-      }
-
-      await setDoc(doc(db, 'allowedStudents', newStudentId.trim()), {
+      await api.post('allowedStudents', {
+        id: newStudentId.trim(),
         studentId: newStudentId.trim(),
-        addedBy: auth.currentUser?.uid || 'unknown',
+        addedBy: currentUser?.uid || 'unknown',
         addedAt: new Date().toISOString()
       });
       setNewStudentId('');
@@ -269,42 +257,21 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
   };
 
   const handleRemoveStudent = async (studentId: string) => {
-    if (studentId === '1357924680') {
-      return;
-    }
+    if (studentId === '1357924680') return;
 
     try {
-      if (isDemoMode) {
-        setAllowedStudents(prev => prev.filter(s => s.studentId !== studentId));
-        setUsers(prev => prev.filter(u => u.studentId !== studentId));
-        setConfirmRemoveId(null);
-        return;
+      await api.delete('allowedStudents', studentId);
+
+      const usersToDel = users.filter(u => u.studentId === studentId);
+      for (const u of usersToDel) {
+        await api.delete('users', u.uid);
       }
 
-      // 1. Delete from allowedStudents
-      await deleteDoc(doc(db, 'allowedStudents', studentId));
-
-      // 2. Find and delete all registered user records with this studentId
-      const q = query(collection(db, 'users'), where('studentId', '==', studentId));
-      const snap = await getDocs(q);
-      
-      if (!snap.empty) {
-        const batch = writeBatch(db);
-        snap.docs.forEach(d => {
-          batch.delete(d.ref);
-        });
-        await batch.commit();
-      }
-
-      // 3. Delete user-specific data associated with studentId
       const collectionsToClean = ['knowledgePoints', 'userTags', 'userStats'];
       for (const collName of collectionsToClean) {
-        const qData = query(collection(db, collName), where('studentId', '==', studentId));
-        const snapData = await getDocs(qData);
-        if (!snapData.empty) {
-          const batch = writeBatch(db);
-          snapData.docs.forEach(d => batch.delete(d.ref));
-          await batch.commit();
+        const items = await api.get(collName, undefined, { studentId });
+        for (const item of items) {
+          await api.delete(collName, item.id);
         }
       }
       
@@ -322,25 +289,10 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
     const newRole = currentRole === 'admin' ? 'student' : 'admin';
     
     try {
-      if (isDemoMode) {
-        setUsers(prev => prev.map(u => u.studentId === studentId ? { ...u, role: newRole as any } : u));
-        return;
+      const userToUpdate = users.find(u => u.uid === uid);
+      if (userToUpdate) {
+        await api.put('users', uid, { role: newRole });
       }
-      
-      // Update all documents with this studentId in chunks of 5 to avoid Firestore rules get() limit
-      const q = query(collection(db, 'users'), where('studentId', '==', studentId));
-      const snap = await getDocs(q);
-      
-      const chunkSize = 5;
-      for (let i = 0; i < snap.docs.length; i += chunkSize) {
-        const chunk = snap.docs.slice(i, i + chunkSize);
-        const batch = writeBatch(db);
-        chunk.forEach(d => {
-          batch.update(d.ref, { role: newRole });
-        });
-        await batch.commit();
-      }
-      
     } catch (err) {
       console.error("Error updating user role:", err);
       alert(t('admin.saveFail'));
@@ -497,6 +449,42 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
                     className={`w-full px-6 py-4 ${theme.input} rounded-2xl focus:ring-4 focus:ring-purple-500/5 outline-none text-sm font-bold transition-all duration-1000`}
                   />
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Art Settings Section */}
+          <div className={`${theme.card} backdrop-blur-2xl rounded-[3rem] border ${theme.border} p-8 md:p-10 space-y-8 transition-all duration-1000`}>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-indigo-500 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                  <Mountain className="w-8 h-8 text-white" />
+                </div>
+                <div>
+                  <h2 className={`text-2xl font-black ${theme.text} tracking-tight`}>{t('admin.art.title')}</h2>
+                  <p className={`${theme.subText} text-xs font-bold uppercase tracking-widest mt-1`}>{t('admin.art.subtitle')}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setArtSettings(prev => ({ ...prev, isEnabled: !prev.isEnabled }))}
+                  className={`flex items-center gap-3 px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all ${
+                    artSettings.isEnabled 
+                      ? 'bg-indigo-600/10 text-indigo-600 border border-indigo-600/20' 
+                      : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'
+                  }`}
+                >
+                  {artSettings.isEnabled ? <ToggleRight className="w-5 h-5" /> : <ToggleLeft className="w-5 h-5" />}
+                  {artSettings.isEnabled ? t('admin.enabled') : t('admin.disabled')}
+                </button>
+                <button
+                  onClick={handleSaveArt}
+                  disabled={isSavingArt}
+                  className="flex items-center gap-3 px-8 py-3 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-600/20 active:scale-95 disabled:opacity-50"
+                >
+                  {isSavingArt ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {t('admin.saveConfig')}
+                </button>
               </div>
             </div>
           </div>
@@ -717,6 +705,81 @@ export default function AdminPanel({ currentUser }: { currentUser: User | null }
             {t('admin.noData')}
           </div>
         )}
+      </div>
+
+      {/* System Info Section */}
+      <div className={`${theme.card} backdrop-blur-2xl rounded-[3rem] border ${theme.border} p-8 md:p-10 transition-all duration-1000`}>
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-slate-500 rounded-2xl flex items-center justify-center shadow-lg shadow-slate-500/20">
+              <Mountain className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h2 className={`text-lg font-black ${theme.text} tracking-tight`}>系统信息 · SYSTEM INFO</h2>
+              <p className={`${theme.subText} text-[10px] font-bold uppercase tracking-widest mt-1`}>
+                WisVale Core v{VERSION}
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="text-right">
+              <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>运行环境</p>
+              <p className={`text-xs font-bold text-green-600 mt-1`}>
+                PRODUCTION
+              </p>
+            </div>
+            <div className="text-right">
+              <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>Node 版本</p>
+              <p className={`text-xs font-bold ${theme.text} mt-1`}>{aiStatus?.nodeVersion || '...'}</p>
+            </div>
+            <div className="text-right">
+              <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>内存占用</p>
+              <p className={`text-xs font-bold ${theme.text} mt-1`}>{aiStatus?.memoryUsage || '...'}</p>
+            </div>
+            <div className="text-right">
+              <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>运行时间</p>
+              <p className={`text-xs font-bold ${theme.text} mt-1`}>{aiStatus?.uptime || '...'}</p>
+            </div>
+          </div>
+        </div>
+        <div className={`my-8 h-[1px] ${isNight ? 'bg-slate-800' : 'bg-slate-100'}`} />
+        <div className="flex justify-around gap-6">
+            <div className="text-center">
+              <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>OCR 状态</p>
+              <p className={`text-xs font-bold ${aiStatus?.ocrReady ? 'text-green-600' : 'text-red-600'} mt-1`}>
+                {aiStatus?.ocrReady ? 'OCR READY' : 'OCR MISSING'}
+              </p>
+            </div>
+            <div className={`w-[1px] h-8 ${isNight ? 'bg-slate-800' : 'bg-slate-100'}`} />
+            <div className="text-center">
+              <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>AI 功能状态</p>
+              <p className={`text-xs font-bold ${aiStatus?.aiReady ? 'text-green-600' : 'text-red-600'} mt-1`}>
+                {aiStatus?.aiReady ? 'API READY' : 'API MISSING'}
+              </p>
+            </div>
+            <div className={`w-[1px] h-8 ${isNight ? 'bg-slate-800' : 'bg-slate-100'}`} />
+            <div className="text-center">
+              <p className={`text-[10px] font-black ${theme.subText} uppercase tracking-widest`}>数据库状态</p>
+              <p className="text-xs font-bold text-green-600 mt-1">CONNECTED</p>
+            </div>
+        </div>
+
+        <div className="mt-8 flex flex-col items-center gap-4">
+          <button
+            onClick={handleTestApi}
+            disabled={isTestingApi}
+            className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+              isTestingApi ? 'bg-slate-500 opacity-50' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20'
+            }`}
+          >
+            {isTestingApi ? '测试中...' : '测试 AI 接口连通性'}
+          </button>
+          {testResult && (
+            <p className={`text-xs font-bold ${testResult.includes('通过') ? 'text-green-600' : 'text-red-600'} animate-in fade-in slide-in-from-top-2`}>
+              {testResult}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,16 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { auth, db, isDemoMode } from '../firebase';
-import { doc, getDoc, setDoc, collection, getDocs, query, limit, where, orderBy } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import { Mountain, Lock, ShieldCheck, ArrowRight, Loader2, AlertTriangle, Info, Languages } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { useLanguage } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function Login() {
   const { isNight, theme, getBgGradient } = useTheme();
   const { language, setLanguage, t } = useLanguage();
+  const { login } = useAuth();
   const navigate = useNavigate();
   const [studentId, setStudentId] = useState('');
   const [loading, setLoading] = useState(false);
@@ -24,151 +23,10 @@ export default function Login() {
     setLoading(true);
     setError('');
 
-    // 如果登录过程卡住超过 8 秒，自动刷新页面
-    const stuckTimeout = setTimeout(() => {
-      window.location.reload();
-    }, 8000);
-
     try {
-      if (isDemoMode) {
-        await new Promise(resolve => setTimeout(resolve, 800));
-        const mockUser = {
-          studentId: id,
-          role: id === 'ADMIN123' ? 'admin' : 'student',
-          createdAt: new Date().toISOString(),
-        };
-        localStorage.setItem('demo_user', JSON.stringify(mockUser));
-        window.dispatchEvent(new Event('login-success'));
-        clearTimeout(stuckTimeout);
-        navigate('/');
-        setTimeout(() => window.location.reload(), 1500);
-        return;
-      }
-
-      // 1. Firebase Auth (Anonymous) - MUST DO THIS FIRST to have permissions for subsequent reads
-      let userCredential;
-      try {
-        userCredential = await signInAnonymously(auth);
-      } catch (authErr: any) {
-        console.error("Auth Error:", authErr);
-        if (authErr.code === 'auth/admin-restricted-operation' || authErr.code === 'auth/operation-not-allowed') {
-          setError(
-            <div>
-              <p className="font-bold mb-1 text-red-700">{t('login.configNotReady')}</p>
-              <p className="mb-2">{t('login.enableAnonymous')}</p>
-              <ol className="list-decimal list-inside space-y-1 mb-3 text-xs opacity-80">
-                <li>{t('login.configStep1')}</li>
-                <li>{t('login.configStep2')}</li>
-                <li>{t('login.configStep3')}</li>
-              </ol>
-              <a 
-                href="https://console.firebase.google.com/project/_/authentication/providers" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="inline-block px-3 py-1 bg-red-600 text-white rounded-lg text-xs font-bold hover:bg-red-700 transition-colors"
-              >
-                {t('login.goToConfig')}
-              </a>
-            </div>
-          );
-          setLoading(false);
-          return;
-        }
-        throw authErr;
-      }
-
-      const uid = userCredential.user.uid;
-
-      // 2. Check if studentId is allowed
-      let allowedSnap;
-      try {
-        const allowedRef = doc(db, 'allowedStudents', id);
-        allowedSnap = await getDoc(allowedRef);
-      } catch (err: any) {
-        console.error('Firestore Error (allowedStudents):', err);
-        throw new Error(t('login.permissionError', { message: err.message }));
-      }
-      
-      // 3. Check if first user (to auto-assign admin)
-      let isFirstUser = false;
-      try {
-        const usersSnap = await getDocs(query(collection(db, 'users'), limit(1)));
-        isFirstUser = usersSnap.empty;
-      } catch (err: any) {
-        console.error('Firestore Error (users):', err);
-        throw new Error(t('login.permissionError', { message: err.message }));
-      }
-
-      if (!allowedSnap?.exists() && !isFirstUser && id !== '1357924680') {
-        setError(t('login.notAuthorized'));
-        setLoading(false);
-        return;
-      }
-
-      // 4. Create/Update User Profile
-      try {
-        const userDocRef = doc(db, 'users', uid);
-        const userDocSnap = await getDoc(userDocRef);
-        
-        if (!userDocSnap.exists()) {
-          let role = isFirstUser || id === '1357924680' ? 'admin' : 'student';
-          
-          // Check if this studentId already has a role from a previous anonymous session
-          const existingUsersSnap = await getDocs(query(collection(db, 'users'), where('studentId', '==', id), orderBy('createdAt', 'desc'), limit(1)));
-          if (!existingUsersSnap.empty) {
-            role = existingUsersSnap.docs[0].data().role;
-          }
-
-          // Get pre-assigned nickname if available
-          let nickname = id === '1357924680' ? '…' : id;
-          if (allowedSnap?.exists()) {
-            const allowedData = allowedSnap.data() as any;
-            if (allowedData.nickname) {
-              nickname = allowedData.nickname;
-            }
-          }
-
-          await setDoc(userDocRef, {
-            uid,
-            studentId: id,
-            nickname,
-            role,
-            questionsUploaded: 0,
-            kpsUploaded: 0,
-            questionsAnswered: 0,
-            tokensUsed: 0,
-            createdAt: new Date().toISOString(),
-          });
-        }
-      } catch (err: any) {
-        console.error('Firestore Error (users profile):', err);
-        throw new Error(t('login.profileError', { message: err.message }));
-      }
-      
-      if (isFirstUser) {
-        try {
-          await setDoc(doc(db, 'config', 'stats'), { initialized: true, questionCount: 0 });
-          await setDoc(doc(db, 'allowedStudents', id), {
-            studentId: id,
-            addedBy: 'system',
-            addedAt: new Date().toISOString()
-          });
-        } catch (err: any) {
-          console.error('Firestore Error (bootstrap):', err);
-          // Non-fatal if profile was created, but good to know
-        }
-      }
-
-      clearTimeout(stuckTimeout);
+      await login(id); // Using the mock login which creates a user via the backend
       navigate('/');
-      
-      // 登录成功后，延迟一段时间自动刷新一次，确保所有状态和数据最新
-      setTimeout(() => {
-        window.location.reload();
-      }, 1500);
-
     } catch (err: any) {
-      clearTimeout(stuckTimeout);
       console.error(err);
       setError(err.message || t('login.loginFail'));
     } finally {
@@ -215,21 +73,6 @@ export default function Login() {
         </div>
 
         <form onSubmit={handleLogin} className="space-y-8">
-          {isDemoMode && (
-            <motion.div 
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 }}
-              className={`p-5 ${isNight ? 'bg-amber-500/5 border-amber-500/10 text-amber-200/80' : 'bg-amber-50/50 border-amber-200/50 text-amber-800'} backdrop-blur-sm border rounded-[1.5rem] text-xs leading-relaxed transition-all duration-1000`}
-            >
-              <div className="flex items-center gap-2 mb-1.5">
-                <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" />
-                <p className="font-black uppercase tracking-widest">{t('layout.demoMode.title')}</p>
-              </div>
-              <p className="opacity-80">{t('login.demoDesc', { adminId: 'ADMIN123' })}</p>
-            </motion.div>
-          )}
-
           <div className="space-y-3">
             <label htmlFor="studentId" className={`block text-[10px] font-black ${theme.subText} uppercase tracking-widest ml-1 transition-colors duration-1000`}>
               {t('login.studentId')}

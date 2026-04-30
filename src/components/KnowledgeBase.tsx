@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { db, auth } from '../firebase';
-import { collection, query, where, onSnapshot, doc, updateDoc, deleteDoc, addDoc, writeBatch, getDocs, orderBy } from 'firebase/firestore';
+import { api } from '../lib/api';
 import { KnowledgePoint, QuestionField, User } from '../types';
 import { useTheme } from '../hooks/useTheme';
 import { useViewMode } from '../hooks/useViewMode';
@@ -31,6 +30,8 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import jsPDF from 'jspdf';
+import { generateKnowledgeSummaryWithAI } from '../services/apiService';
+import Markdown from 'react-markdown';
 
 export default function KnowledgeBase({ user }: { user: User | null }) {
   const { theme, isNight } = useTheme();
@@ -46,6 +47,11 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
   const [batchQuestionIds, setBatchQuestionIds] = useState('');
   const [isBatchImporting, setIsBatchImporting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  
+  // AI Summary State
+  const [aiSummary, setAiSummary] = useState<string>('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiError, setAiError] = useState(false);
 
   // Confirmation Modal State
   const [confirmModal, setConfirmModal] = useState<{
@@ -73,19 +79,21 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
   useEffect(() => {
     if (!user?.studentId) return;
 
-    const q = query(
-      collection(db, 'knowledgePoints'),
-      where('studentId', '==', user.studentId),
-      orderBy('createdAt', 'desc')
-    );
+    const fetchKps = async () => {
+      try {
+        const data = await api.get('knowledgePoints', undefined, { studentId: user.studentId });
+        setKps(data);
+      } catch (err) {
+        console.error("Error fetching knowledge points:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as KnowledgePoint));
-      setKps(data);
-      setLoading(false);
-    });
+    fetchKps();
+    const interval = setInterval(fetchKps, 15000); // Poll every 15s
 
-    return () => unsubscribe();
+    return () => clearInterval(interval);
   }, [user?.studentId]);
 
   const filteredKps = useMemo(() => {
@@ -100,11 +108,13 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
 
   const handleLevelUp = async (kp: KnowledgePoint) => {
     if (kp.level >= 4) return;
+    const nextLevel = (kp.level + 1) as 1 | 2 | 3 | 4;
     try {
-      await updateDoc(doc(db, 'knowledgePoints', kp.id), {
-        level: kp.level + 1,
-        mastered: kp.level + 1 === 4
+      await api.put('knowledgePoints', kp.id, {
+        level: nextLevel,
+        mastered: nextLevel === 4
       });
+      setKps(prev => prev.map(item => item.id === kp.id ? { ...item, level: nextLevel, mastered: nextLevel === 4 } : item));
     } catch (err) {
       console.error('Error leveling up:', err);
     }
@@ -118,10 +128,11 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
       type: 'success',
       onConfirm: async () => {
         try {
-          await updateDoc(doc(db, 'knowledgePoints', kp.id), {
+          await api.put('knowledgePoints', kp.id, {
             level: 4,
             mastered: true
           });
+          setKps(prev => prev.map(item => item.id === kp.id ? { ...item, level: 4, mastered: true } : item));
           setConfirmModal(prev => ({ ...prev, show: false }));
         } catch (err) {
           console.error('Error mastering:', err);
@@ -132,7 +143,8 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'knowledgePoints', id));
+      await api.delete('knowledgePoints', id);
+      setKps(prev => prev.filter(item => item.id !== id));
       setDeletingId(null);
     } catch (err) {
       console.error('Error deleting:', err);
@@ -144,39 +156,31 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
     setIsBatchImporting(true);
     try {
       const ids = batchQuestionIds.split(/[,，\s\n]+/).filter(id => id.trim());
-      const batch = writeBatch(db);
       
       for (const id of ids) {
-        const qSnap = await getDocs(query(collection(db, 'questions'), where('id', '==', id.trim())));
-        if (!qSnap.empty) {
-          const qData = qSnap.docs[0].data();
-          const kps = qData.knowledgePoints || [];
+        const questions = await api.get('questions', undefined, { id: id.trim() });
+        if (questions && questions.length > 0) {
+          const qData = questions[0];
+          const kpsList = qData.knowledgePoints || [];
           
-          // Deduplicate within the question's own KPs
-          const uniqueKps = kps.filter((kp: any, idx: number, self: any[]) => 
+          const uniqueKps = kpsList.filter((kp: any, idx: number, self: any[]) => 
             idx === self.findIndex((t: any) => t.title === kp.title)
           );
 
           for (const kp of uniqueKps) {
-            // Check if already in user's knowledge base
-            const qry = query(
-              collection(db, 'knowledgePoints'),
-              where('studentId', '==', user?.studentId),
-              where('title', '==', kp.title)
-            );
-            const snapshot = await getDocs(qry);
+            const existing = await api.get('knowledgePoints', undefined, { 
+              studentId: user?.studentId, 
+              title: kp.title 
+            });
             
-            if (snapshot.empty) {
-              const newRef = doc(collection(db, 'knowledgePoints'));
-              batch.set(newRef, {
-                id: newRef.id,
+            if (existing.length === 0) {
+              await api.post('knowledgePoints', {
                 questionId: id.trim(),
                 field: Array.isArray(qData.field) ? qData.field[0] : qData.field,
                 title: kp.title,
                 content: kp.content,
                 level: 1,
                 mastered: false,
-                createdAt: new Date().toISOString(),
                 userId: user?.uid,
                 studentId: user?.studentId
               });
@@ -184,7 +188,6 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
           }
         }
       }
-      await batch.commit();
       setBatchQuestionIds('');
       alert(t('common.success'));
     } catch (err) {
@@ -218,6 +221,21 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
   }, [kps, t]);
 
   const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e'];
+
+  const handleGenerateSummary = async () => {
+    if (kps.length === 0) return;
+    setIsAiLoading(true);
+    setAiError(false);
+    try {
+      const result = await generateKnowledgeSummaryWithAI(kps);
+      setAiSummary(result.summary);
+    } catch (err) {
+      console.error('AI Summary failed:', err);
+      setAiError(true);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -308,7 +326,7 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
                   {['1', '2', '3'].includes(activeTab) && (
                     <button 
                       onClick={() => {
-                        const kpsToAnswer = filteredKps.slice(0, 5).map(kp => kp.id);
+                        const kpsToAnswer = (filteredKps || []).slice(0, 5).map(kp => kp.id);
                         if (kpsToAnswer.length > 0) {
                           navigate(`/answer/${activeTab}?ids=${kpsToAnswer.join(',')}`);
                         } else {
@@ -391,7 +409,7 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
               <p className="text-xs text-slate-500 uppercase tracking-widest">{t('kb.printDate')}: {new Date().toLocaleDateString()}</p>
             </div>
             <div className="space-y-8">
-              {filteredKps.slice(0, printCount).map((kp, index) => (
+              {(filteredKps || []).slice(0, printCount).map((kp, index) => (
                 <div key={kp.id} className="border-b border-slate-100 pb-6 last:border-0 break-inside-avoid">
                   <div className="flex justify-between items-start mb-3">
                     <span className="font-serif font-black text-xl opacity-20">{String(index + 1).padStart(2, '0')}</span>
@@ -543,7 +561,47 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
             </div>
 
             <div className="space-y-4">
-              <h3 className={`text-lg font-black ${theme.text}`}>{t('kb.summary.report')}</h3>
+              <div className="flex items-center justify-between">
+                <h3 className={`text-lg font-black ${theme.text}`}>{t('kb.summary.report')}</h3>
+                <button
+                  onClick={handleGenerateSummary}
+                  disabled={isAiLoading || kps.length === 0}
+                  className={`px-4 py-2 bg-green-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-green-700 transition-all flex items-center gap-2 disabled:opacity-50`}
+                >
+                  {isAiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  {aiSummary ? t('kb.summary.ai.refresh') : t('kb.summary.ai.generate')}
+                </button>
+              </div>
+
+              <div className={`p-6 rounded-3xl ${isNight ? 'bg-slate-900/50' : 'bg-slate-50'} border ${theme.border} space-y-6 relative overflow-hidden`}>
+                {isAiLoading ? (
+                  <div className="py-12 flex flex-col items-center justify-center space-y-4 text-center">
+                    <Loader2 className="w-8 h-8 text-green-600 animate-spin" />
+                    <p className={`text-sm font-bold ${theme.subText} animate-pulse`}>{t('kb.summary.ai.loading')}</p>
+                  </div>
+                ) : aiError ? (
+                  <div className="py-12 flex flex-col items-center justify-center space-y-4 text-center text-red-500">
+                    <AlertTriangle className="w-8 h-8" />
+                    <p className="text-sm font-bold">{t('kb.summary.ai.fail')}</p>
+                  </div>
+                ) : aiSummary ? (
+                  <div className={`prose prose-sm max-w-none ${isNight ? 'prose-invert' : ''} transition-all`}>
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg">AI Report</div>
+                      <span className={`text-[10px] ${theme.subText} font-bold`}>{t('kb.aiAnalysis')}</span>
+                    </div>
+                    <div className={isNight ? 'text-slate-300' : 'text-slate-700'}>
+                      <Markdown>{aiSummary}</Markdown>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="py-12 flex flex-col items-center justify-center space-y-4 text-center opacity-50">
+                    <Brain className="w-12 h-12 text-slate-300" />
+                    <p className={`text-sm font-bold ${theme.subText}`}>{t('kb.summary.ai.placeholder')}</p>
+                  </div>
+                )}
+              </div>
+
               <div className={`p-6 rounded-3xl ${isNight ? 'bg-slate-900/50' : 'bg-slate-50'} border ${theme.border} space-y-4`}>
                 <p className={`text-sm font-medium ${theme.text} leading-relaxed`}>
                   {t('kb.summary.total', { count: kps.length })}
@@ -677,7 +735,7 @@ export default function KnowledgeBase({ user }: { user: User | null }) {
             <p className="text-xs text-slate-500 uppercase tracking-widest">{t('kb.printDate')}: {new Date().toLocaleDateString()} | {t('kb.printCount')}: {Math.min(printCount, filteredKps.length)}</p>
           </div>
           <div className="space-y-8">
-            {filteredKps.slice(0, printCount).map((kp, index) => (
+            {(filteredKps || []).slice(0, printCount).map((kp, index) => (
               <div key={kp.id} className="border-b border-slate-100 pb-6 last:border-0 break-inside-avoid">
                 <div className="flex justify-between items-start mb-3">
                   <span className="font-serif font-black text-xl opacity-20">{String(index + 1).padStart(2, '0')}</span>

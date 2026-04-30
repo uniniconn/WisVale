@@ -1,8 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { auth, db, isDemoMode } from './firebase';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import UploadQuestion from './components/UploadQuestion';
@@ -13,111 +10,22 @@ import Leaderboard from './components/Leaderboard';
 import KnowledgeBase from './components/KnowledgeBase';
 import KnowledgeLevelPage from './components/KnowledgeLevelPage';
 import KnowledgeSummary from './components/KnowledgeSummary';
+import SettingsPage from './components/Settings';
 import QuestionDetail from './components/QuestionDetail';
 import AnswerPage from './components/AnswerPage';
 import Layout from './components/Layout';
-import { User } from './types';
 import { useTheme } from './hooks/useTheme';
 import { LanguageProvider } from './contexts/LanguageContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Mountain, RefreshCw } from 'lucide-react';
 
-export default function App() {
-  const { theme, isNight, getBgGradient } = useTheme();
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [userData, setUserData] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [demoUser, setDemoUser] = useState<User | null>(null);
+function AppContent() {
+  const { theme, getBgGradient } = useTheme();
+  const { loading, isAuthenticated, effectiveUser } = useAuth();
 
   useEffect(() => {
     document.title = 'WisVale';
   }, []);
-
-  useEffect(() => {
-    const checkDemoUser = () => {
-      if (isDemoMode) {
-        const savedUser = localStorage.getItem('demo_user');
-        if (savedUser) {
-          setDemoUser(JSON.parse(savedUser));
-        } else {
-          setDemoUser(null);
-        }
-        setLoading(false);
-      }
-    };
-
-    if (isDemoMode) {
-      checkDemoUser();
-      window.addEventListener('storage', checkDemoUser);
-      window.addEventListener('login-success', checkDemoUser);
-      return () => {
-        window.removeEventListener('storage', checkDemoUser);
-        window.removeEventListener('login-success', checkDemoUser);
-      };
-    }
-
-    let userDocUnsubscribe: (() => void) | null = null;
-
-    const timeoutId = setTimeout(() => {
-      if (loading) {
-        console.warn("Firebase auth/firestore is taking too long. Forcing load to finish.");
-        setLoading(false);
-      }
-    }, 5000);
-
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
-        try {
-          if (userDocUnsubscribe) {
-            userDocUnsubscribe();
-          }
-          // Use onSnapshot for real-time updates to user profile (e.g. role changes)
-          userDocUnsubscribe = onSnapshot(doc(db, 'users', firebaseUser.uid), (userDoc) => {
-            if (userDoc.exists()) {
-              setUserData(userDoc.data() as User);
-              setLoading(false);
-              clearTimeout(timeoutId);
-            } else {
-              // If user exists in Auth but not in Firestore yet, we wait a bit longer
-              // but eventually we must stop loading to show something
-              setUserData(null);
-              // Don't set loading(false) immediately if we just logged in
-              // The timeout will handle the case where the document never appears
-            }
-          }, (err) => {
-            console.error("Error fetching user data:", err);
-            // If it's a permission error, it might be because the document doesn't exist yet
-            // or the rules are still propagating. We'll set loading false but keep userData null.
-            setLoading(false);
-            clearTimeout(timeoutId);
-          });
-        } catch (err) {
-          console.error("Error setting up user listener:", err);
-          setLoading(false);
-          clearTimeout(timeoutId);
-        }
-      } else {
-        if (userDocUnsubscribe) {
-          userDocUnsubscribe();
-          userDocUnsubscribe = null;
-        }
-        setUserData(null);
-        setLoading(false);
-        clearTimeout(timeoutId);
-      }
-    });
-
-    return () => {
-      clearTimeout(timeoutId);
-      unsubscribe();
-      if (userDocUnsubscribe) {
-        userDocUnsubscribe();
-      }
-    };
-  }, []);
-
-  const effectiveUser = isDemoMode ? demoUser : userData;
-  const isAuthenticated = isDemoMode ? !!demoUser : (!!user && !!userData);
 
   if (loading) {
     return (
@@ -164,9 +72,8 @@ export default function App() {
   }
 
   return (
-    <LanguageProvider>
-      <Router>
-        <Routes>
+    <Router>
+      <Routes>
         <Route path="/login" element={isAuthenticated ? <Navigate to="/" /> : <Login />} />
         <Route
           path="/"
@@ -187,6 +94,10 @@ export default function App() {
         <Route
           path="/admin"
           element={isAuthenticated && effectiveUser?.role === 'admin' ? <Layout user={effectiveUser}><AdminPanel currentUser={effectiveUser} /></Layout> : <Navigate to="/" />}
+        />
+        <Route
+          path="/settings"
+          element={isAuthenticated && effectiveUser?.role === 'admin' ? <Layout user={effectiveUser}><SettingsPage user={effectiveUser} /></Layout> : <Navigate to="/" />}
         />
         <Route
           path="/leaderboard"
@@ -212,8 +123,18 @@ export default function App() {
           path="/question/:id"
           element={isAuthenticated ? <Layout user={effectiveUser}><QuestionDetail user={effectiveUser} /></Layout> : <Navigate to="/login" />}
         />
+        <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Router>
+  );
+}
+
+export default function App() {
+  return (
+    <LanguageProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </LanguageProvider>
   );
 }

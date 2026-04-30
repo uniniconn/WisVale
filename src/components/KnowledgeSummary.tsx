@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { db, auth, trackTokens } from '../firebase';
-import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { api, trackTokens } from '../lib/api';
 import { generateKnowledgeSummaryWithAI } from '../services/apiService';
 import { KnowledgePoint, User } from '../types';
 import { useTheme } from '../hooks/useTheme';
@@ -29,19 +28,21 @@ export default function KnowledgeSummary({ user }: { user: User | null }) {
   useEffect(() => {
     if (!user?.studentId) return;
 
-    const q = query(
-      collection(db, 'knowledgePoints'),
-      where('studentId', '==', user.studentId),
-      orderBy('createdAt', 'desc')
-    );
+    const fetchData = async () => {
+      try {
+        const data = await api.get('knowledgePoints', undefined, { 
+          studentId: user.studentId
+        });
+        setKps(data);
+        setLoading(false);
+      } catch (err) {
+        console.error("Error fetching KPs for summary:", err);
+      }
+    };
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as KnowledgePoint));
-      setKps(data);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
   }, [user?.studentId]);
 
   const summaryData = useMemo(() => {
@@ -55,13 +56,13 @@ export default function KnowledgeSummary({ user }: { user: User | null }) {
   const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e'];
 
   const generateAiSummary = async () => {
-    if (kps.length === 0) return;
+    if (kps.length === 0 || !user?.uid) return;
     setIsGenerating(true);
     try {
       const data = await generateKnowledgeSummaryWithAI(kps.map(k => ({ title: k.title, field: k.field, level: k.level })));
       setAiSummary(data.summary);
       if (data.usage?.total_tokens) {
-        trackTokens(data.usage.total_tokens);
+        trackTokens(data.usage.total_tokens, user.uid);
       }
     } catch (err) {
       console.error('AI Summary generation failed:', err);

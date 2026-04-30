@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db, isDemoMode, awardPoints } from '../firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { api, awardPoints } from '../lib/api';
 import { Question } from '../types';
 import { FileText, Printer, Eye, EyeOff, ChevronLeft, Download, Share2, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -8,23 +7,6 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useTheme } from '../hooks/useTheme';
 
 import { useLanguage } from '../contexts/LanguageContext';
-
-const MOCK_QUESTIONS: Question[] = [
-  {
-    id: 'U0001',
-    imageUrl: 'https://picsum.photos/seed/bio1/800/600',
-    field: '细胞生物学',
-    source: '猿辅导',
-    sourceDetail: '2023年全国甲卷第3题',
-    difficulty: ['难题'],
-    type: '概念题',
-    content: '下列关于细胞呼吸的叙述，错误的是（ ）\nA. 葡萄糖在细胞质基质中分解为丙酮酸\nB. 有氧呼吸产生的[H]在线粒体内膜上与氧结合生成水\nC. 只有有氧呼吸才能产生ATP\nD. 丙酮酸进入线粒体后才能被彻底氧化分解',
-    answer: 'C',
-    explanation: '无氧呼吸在第一阶段也能产生少量ATP。',
-    createdBy: 'demo',
-    createdAt: new Date().toISOString()
-  }
-];
 
 export default function PaperGenerator({ user }: { user: any }) {
   const [searchParams] = useSearchParams();
@@ -46,14 +28,8 @@ export default function PaperGenerator({ user }: { user: any }) {
     const fetchSelected = async () => {
       setLoading(true);
       try {
-        if (isDemoMode) {
-          setQuestions(MOCK_QUESTIONS.filter(q => selectedIds.includes(q.id)));
-          setLoading(false);
-          return;
-        }
-        const q = query(collection(db, 'questions'), where('id', 'in', selectedIds));
-        const snap = await getDocs(q);
-        setQuestions(snap.docs.map(doc => ({ ...doc.data() } as Question)));
+        const questionsData = await api.get('questions', undefined, { ids: selectedIds.join(',') });
+        setQuestions(questionsData);
       } catch (err) {
         console.error(err);
       } finally {
@@ -65,8 +41,9 @@ export default function PaperGenerator({ user }: { user: any }) {
 
   const handlePrint = async () => {
     try {
+      if (!user?.uid) return;
       // Award points to current user for printing
-      await awardPoints(5);
+      await awardPoints(5, user.uid);
       
       // Award points to creators of selected questions (2 points per question)
       const creatorCounts: Record<string, number> = {};

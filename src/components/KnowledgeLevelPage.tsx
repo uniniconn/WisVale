@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, auth } from '../firebase';
-import { collection, query, where, onSnapshot, doc, updateDoc, deleteDoc, orderBy, writeBatch, getDocs } from 'firebase/firestore';
+import { api } from '../lib/api';
 import { KnowledgePoint, QuestionField, User } from '../types';
 import { useTheme } from '../hooks/useTheme';
 import { useViewMode } from '../hooks/useViewMode';
@@ -61,20 +60,22 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
   useEffect(() => {
     if (!user?.studentId) return;
 
-    const q = query(
-      collection(db, 'knowledgePoints'),
-      where('studentId', '==', user.studentId),
-      where('level', '==', currentLevel),
-      orderBy('createdAt', 'desc')
-    );
+    const fetchData = async () => {
+      try {
+        const data = await api.get('knowledgePoints', undefined, { 
+          studentId: user.studentId,
+          level: currentLevel.toString()
+        });
+        setKps(data);
+        setLoading(false);
+      } catch (err) {
+        console.error("Error fetching KPs:", err);
+      }
+    };
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as KnowledgePoint));
-      setKps(data);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
   }, [currentLevel, user?.studentId]);
 
   const filteredKps = useMemo(() => {
@@ -89,7 +90,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
   const handleLevelUp = async (kp: KnowledgePoint) => {
     if (kp.level >= 4) return;
     try {
-      await updateDoc(doc(db, 'knowledgePoints', kp.id), {
+      await api.put('knowledgePoints', kp.id, {
         level: kp.level + 1,
         mastered: kp.level + 1 === 4
       });
@@ -106,7 +107,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
       type: 'warning',
       onConfirm: async () => {
         try {
-          await updateDoc(doc(db, 'knowledgePoints', kp.id), {
+          await api.put('knowledgePoints', kp.id, {
             level: 4,
             mastered: true
           });
@@ -120,7 +121,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'knowledgePoints', id));
+      await api.delete('knowledgePoints', id);
       setDeletingId(null);
     } catch (err) {
       console.error('Error deleting:', err);
@@ -132,27 +133,22 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
     setIsBatchImporting(true);
     try {
       const ids = batchQuestionIds.split(/[,，\s\n]+/).filter(id => id.trim());
-      const batch = writeBatch(db);
       let addedCount = 0;
       
       for (const id of ids) {
-        const qSnap = await getDocs(query(collection(db, 'questions'), where('id', '==', id.trim())));
-        if (!qSnap.empty) {
-          const qData = qSnap.docs[0].data();
-          const kps = qData.knowledgePoints || [];
-          for (const kp of kps) {
+        const questions = await api.get('questions', undefined, { id: id.trim() });
+        if (questions && questions.length > 0) {
+          const qData = questions[0];
+          const kpsList = qData.knowledgePoints || [];
+          for (const kp of kpsList) {
             // Deduplication check
-            const dupQ = query(
-              collection(db, 'knowledgePoints'),
-              where('studentId', '==', user.studentId),
-              where('title', '==', kp.title)
-            );
-            const dupSnap = await getDocs(dupQ);
+            const duplicates = await api.get('knowledgePoints', undefined, {
+              studentId: user.studentId,
+              title: kp.title
+            });
             
-            if (dupSnap.empty) {
-              const newRef = doc(collection(db, 'knowledgePoints'));
-              batch.set(newRef, {
-                id: newRef.id,
+            if (duplicates.length === 0) {
+              await api.post('knowledgePoints', {
                 questionId: id.trim(),
                 field: Array.isArray(qData.field) ? qData.field[0] : qData.field,
                 title: kp.title,
@@ -169,7 +165,6 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
         }
       }
       if (addedCount > 0) {
-        await batch.commit();
         alert(t('kb.level.importSuccess', { count: addedCount }));
       } else {
         alert(t('kb.level.importNoNew'));
@@ -267,7 +262,7 @@ export default function KnowledgeLevelPage({ user }: { user: User | null }) {
                   {currentLevel < 4 ? (
                     <button 
                       onClick={() => {
-                        const kpsToAnswer = filteredKps.slice(0, 5).map(kp => kp.id);
+                        const kpsToAnswer = (filteredKps || []).slice(0, 5).map(kp => kp.id);
                         if (kpsToAnswer.length > 0) {
                           navigate(`/answer/${currentLevel}?ids=${kpsToAnswer.join(',')}`);
                         } else {

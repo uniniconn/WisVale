@@ -1,43 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, isDemoMode } from '../firebase';
-import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { api } from '../lib/api';
 import { Question, QuestionField, QuestionSource, QuestionDifficulty, QuestionType, User } from '../types';
 import { Save, ChevronLeft, Loader2, AlertCircle, FileText, Info, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useTheme } from '../hooks/useTheme';
 import { useLanguage } from '../contexts/LanguageContext';
-
-const MOCK_QUESTIONS: Question[] = [
-  {
-    id: 'U0001',
-    imageUrl: 'https://picsum.photos/seed/bio1/800/600',
-    field: '细胞生物学',
-    source: '猿辅导',
-    sourceDetail: '2023年全国甲卷第3题',
-    difficulty: ['难题'],
-    type: '概念题',
-    content: '下列关于细胞呼吸的叙述，错误的是（ ）\nA. 葡萄糖在细胞质基质中分解为丙酮酸\nB. 有氧呼吸产生的[H]在线粒体内膜上与氧结合生成水\nC. 只有有氧呼吸才能产生ATP\nD. 丙酮酸进入线粒体后才能被彻底氧化分解',
-    answer: 'C',
-    explanation: '无氧呼吸在第一阶段也能产生少量ATP。',
-    createdBy: 'demo',
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'U0002',
-    imageUrl: 'https://picsum.photos/seed/bio2/800/600',
-    field: '生物化学',
-    source: '北斗学友',
-    sourceDetail: '必修一《分子与细胞》P45',
-    difficulty: ['易错题'],
-    type: '计算题',
-    content: '某蛋白质由n条肽链组成，氨基酸的平均分子量为a，若该蛋白质共有m个氨基酸，则该蛋白质的分子量约为多少？',
-    answer: 'ma - 18(m-n)',
-    explanation: '蛋白质分子量 = 氨基酸总分子量 - 脱去水的总分子量。脱去水分子数 = 氨基酸数 - 肽链数。',
-    createdBy: 'demo',
-    createdAt: new Date().toISOString()
-  }
-];
 
 export default function EditQuestion({ user }: { user: User | null }) {
   const { isNight, theme } = useTheme();
@@ -48,7 +16,6 @@ export default function EditQuestion({ user }: { user: User | null }) {
   const [saving, setSaving] = useState(false);
   const [question, setQuestion] = useState<Question | null>(null);
   const [uploaderNickname, setUploaderNickname] = useState<string | null>(null);
-  const [firestoreDocId, setFirestoreDocId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     field: [] as QuestionField[],
     source: '' as QuestionSource,
@@ -68,46 +35,19 @@ export default function EditQuestion({ user }: { user: User | null }) {
         return;
       }
 
-      if (isDemoMode) {
-        const mockQ = MOCK_QUESTIONS.find(q => q.id === id);
-        if (mockQ) {
-          setQuestion(mockQ);
-          setFormData({
-            field: Array.isArray(mockQ.field) ? mockQ.field : [mockQ.field as QuestionField],
-            source: mockQ.source,
-            sourceDetail: mockQ.sourceDetail,
-            difficulty: mockQ.difficulty,
-            type: mockQ.type,
-            answer: mockQ.answer || '',
-            explanation: mockQ.explanation || '',
-            content: mockQ.content || '',
-            publicTags: mockQ.publicTags || [],
-          });
-        } else {
-          alert(t('edit.notExist'));
-          navigate('/');
-        }
-        setLoading(false);
-        return;
-      }
-
       try {
-        // Query by the human-readable ID field
-        const q = query(collection(db, 'questions'), where('id', '==', id));
-        const querySnapshot = await getDocs(q);
+        // Query by the human-readable ID field via query params
+        const questions = await api.get('questions', undefined, { id: id });
         
-        if (!querySnapshot.empty) {
-          const docSnap = querySnapshot.docs[0];
-          const data = docSnap.data() as Question;
-          setFirestoreDocId(docSnap.id);
+        if (questions && questions.length > 0) {
+          const data = questions[0] as Question;
           setQuestion(data);
           
           // Fetch uploader nickname
           if (data.createdBy) {
-            const userDoc = await getDocs(query(collection(db, 'users'), where('uid', '==', data.createdBy)));
-            if (!userDoc.empty) {
-              const userData = userDoc.docs[0].data() as User;
-              setUploaderNickname(userData.nickname || null);
+            const uploadedByUsers = await api.get('users', undefined, { uid: data.createdBy });
+            if (uploadedByUsers && uploadedByUsers.length > 0) {
+              setUploaderNickname(uploadedByUsers[0].nickname || null);
             }
           }
           
@@ -142,26 +82,21 @@ export default function EditQuestion({ user }: { user: User | null }) {
     };
 
     fetchQuestion();
-  }, [id, navigate]);
+  }, [id, navigate, user]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (saving) return;
+    if (saving || !question) return;
 
     setSaving(true);
     try {
-      if (isDemoMode) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        alert(t('edit.saveSuccessDemo'));
-        navigate('/');
-        return;
-      }
-
-      if (!firestoreDocId) {
-        throw new Error("Missing Firestore document ID");
-      }
-
-      await updateDoc(doc(db, 'questions', firestoreDocId), {
+      // Find the key for this question in local db
+      // In our server, api.get('questions', undefined, {id: id}) returns the matched items.
+      // We need the key (which we set to questionData.id in server.ts POST as well).
+      // If we used api.get('questions', id) it would work if id is the key.
+      // Let's assume the key is the same as question.id (the human ID).
+      
+      await api.put('questions', question.id, {
         ...question,
         ...formData
       });
@@ -235,7 +170,7 @@ export default function EditQuestion({ user }: { user: User | null }) {
                 <img 
                   src={question.imageUrl} 
                   alt="Question" 
-                  className={`w-full h-auto object-contain transition-all duration-1000 ${isNight ? 'invert-[0.85] hue-rotate-180 brightness-110 contrast-110' : ''}`}
+                  className="w-full h-auto object-contain transition-all duration-1000"
                   referrerPolicy="no-referrer"
                 />
               ) : (

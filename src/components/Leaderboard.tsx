@@ -1,19 +1,10 @@
 import { useState, useEffect } from 'react';
-import { db, isDemoMode } from '../firebase';
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { api } from '../lib/api';
 import { User } from '../types';
 import { Trophy, Medal, Crown, Star, TrendingUp, Users } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useTheme } from '../hooks/useTheme';
 import { useLanguage } from '../contexts/LanguageContext';
-
-const MOCK_LEADERBOARD: User[] = [
-  { uid: '1', studentId: '2024001', role: 'student', points: 450, createdAt: '' },
-  { uid: '2', studentId: '2024005', role: 'student', points: 380, createdAt: '' },
-  { uid: '3', studentId: '2024012', role: 'student', points: 310, createdAt: '' },
-  { uid: '4', studentId: '2024008', role: 'student', points: 290, createdAt: '' },
-  { uid: '5', studentId: '2024015', role: 'student', points: 250, createdAt: '' },
-];
 
 export default function Leaderboard({ currentUser }: { currentUser: User | null }) {
   const [users, setUsers] = useState<User[]>([]);
@@ -23,38 +14,29 @@ export default function Leaderboard({ currentUser }: { currentUser: User | null 
   const { t } = useLanguage();
 
   useEffect(() => {
-    if (isDemoMode) {
-      setUsers(MOCK_LEADERBOARD);
-      setLoading(false);
-      return;
-    }
-
-    const q = query(
-      collection(db, 'users'),
-      orderBy(activeTab, 'desc'),
-      limit(20)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const leaderboardData = snapshot.docs.map(doc => ({
-        ...doc.data()
-      } as User));
-      
-      // Deduplicate by studentId
-      const uniqueUsers: User[] = [];
-      const seenIds = new Set<string>();
-      for (const u of leaderboardData) {
-        if (u.studentId && !seenIds.has(u.studentId)) {
-          seenIds.add(u.studentId);
-          uniqueUsers.push(u);
+    const fetchLeaderboard = async () => {
+      try {
+        const usersData = await api.get('users', undefined, { sortBy: activeTab, order: 'desc', limit: '20' });
+        
+        // Deduplicate by studentId if needed (backend should probably handle this)
+        const uniqueUsers: User[] = [];
+        const seenIds = new Set<string>();
+        for (const u of usersData) {
+          if (u.studentId && !seenIds.has(u.studentId)) {
+            seenIds.add(u.studentId);
+            uniqueUsers.push(u);
+          }
         }
+        
+        setUsers(uniqueUsers);
+      } catch (err) {
+        console.error("Error fetching leaderboard:", err);
+      } finally {
+        setLoading(false);
       }
-      
-      setUsers(uniqueUsers);
-      setLoading(false);
-    });
+    };
 
-    return () => unsubscribe();
+    fetchLeaderboard();
   }, [activeTab]);
 
   const getRankIcon = (index: number) => {
@@ -106,7 +88,7 @@ export default function Leaderboard({ currentUser }: { currentUser: User | null 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Top 3 Cards */}
         <AnimatePresence mode="popLayout">
-          {users.slice(0, 3).map((user, index) => (
+          {(users || []).slice(0, 3).map((user, index) => (
             <motion.div
               key={user.uid}
               initial={{ opacity: 0, scale: 0.9, y: 20 }}

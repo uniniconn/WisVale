@@ -35,8 +35,14 @@ export function useViewMode() {
     };
   }, []);
 
+  const updateViewMode = (mode: 'auto' | 'mobile' | 'desktop') => {
+    localStorage.setItem('view_mode', mode);
+    setViewMode(mode);
+    window.dispatchEvent(new Event('view-mode-change'));
+  };
+
   const isMobileView = viewMode === 'mobile' || (viewMode === 'auto' && windowWidth < 768);
   const isDesktopForced = viewMode === 'desktop';
 
-  return { viewMode, isMobileView, isDesktopForced, windowWidth };
+  return { viewMode, setViewMode: updateViewMode, isMobileView, isDesktopForced, windowWidth };
 }

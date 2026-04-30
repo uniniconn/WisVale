@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { db, auth, trackTokens } from '../firebase';
-import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
+import { api, trackTokens } from '../lib/api';
 import { evaluateAnswerWithAI } from '../services/apiService';
 import { KnowledgePoint, User } from '../types';
 import { useTheme } from '../hooks/useTheme';
@@ -21,7 +20,7 @@ export default function AnswerPage({ user }: { user: User | null }) {
   const [loading, setLoading] = useState(true);
   const [answer, setAnswer] = useState('');
   const [evaluating, setEvaluating] = useState(false);
-  const [result, setResult] = useState<{ pass: boolean; reason: string } | null>(null);
+  const [result, setResult] = useState<{ pass: boolean; reason: string; usage?: any } | null>(null);
   const [redoneQuestions, setRedoneQuestions] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -34,18 +33,14 @@ export default function AnswerPage({ user }: { user: User | null }) {
       }
 
       const ids = idsParam.split(',');
-      const fetchedKps: KnowledgePoint[] = [];
-      
-      for (const id of ids) {
-        const docRef = doc(db, 'knowledgePoints', id);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          fetchedKps.push({ ...docSnap.data(), id: docSnap.id } as KnowledgePoint);
-        }
+      try {
+        const fetchedKps: KnowledgePoint[] = await api.get('knowledgePoints', undefined, { ids: ids.join(',') });
+        setKps(fetchedKps);
+      } catch (err) {
+        console.error("Error fetching KPs:", err);
+      } finally {
+        setLoading(false);
       }
-      
-      setKps(fetchedKps);
-      setLoading(false);
     };
 
     fetchKps();
@@ -61,8 +56,8 @@ export default function AnswerPage({ user }: { user: User | null }) {
       const parsed = await evaluateAnswerWithAI(currentKp.title, currentKp.content, answer);
       setResult(parsed);
       
-      if (parsed.usage?.total_tokens) {
-        trackTokens(parsed.usage.total_tokens);
+      if (parsed.usage?.total_tokens && user?.uid) {
+        trackTokens(parsed.usage.total_tokens, user.uid);
       }
     } catch (err) {
       console.error("Evaluation error:", err);
@@ -75,7 +70,7 @@ export default function AnswerPage({ user }: { user: User | null }) {
   const handleNext = async () => {
     if (!currentKp || !result) return;
 
-    // Update level in Firestore
+    // Update level in Local DB
     try {
       let newLevel = 1;
       if (result.pass) {
@@ -88,13 +83,15 @@ export default function AnswerPage({ user }: { user: User | null }) {
         newLevel = 1;
       }
 
-      await updateDoc(doc(db, 'knowledgePoints', currentKp.id), {
+      await api.put('knowledgePoints', currentKp.id, {
         level: newLevel,
         mastered: newLevel === 4
       });
+
       if (user?.uid) {
-        await updateDoc(doc(db, 'users', user.uid), {
-          questionsAnswered: increment(1)
+        const userData = await api.get('users', user.uid);
+        await api.put('users', user.uid, {
+          questionsAnswered: (userData.questionsAnswered || 0) + 1
         });
       }
     } catch (err) {

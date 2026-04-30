@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { db, auth, isDemoMode, awardPoints } from '../firebase';
-import { collection, query, orderBy, onSnapshot, where, doc, setDoc, getDocs, deleteDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { api } from '../lib/api';
 import { Question, UserTag, User, QuestionDifficulty, QuestionField } from '../types';
 import { Search, Filter, Tag, Plus, FileText, CheckCircle2, ChevronRight, Edit2, Trash2, RefreshCw, X, ChevronDown, ChevronUp, ArrowUpDown, Shuffle, Clock, Copy, ListChecks, Sparkles, Brain } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -9,37 +8,6 @@ import { useViewMode } from '../hooks/useViewMode';
 import { useTheme } from '../hooks/useTheme';
 import { useLanguage } from '../contexts/LanguageContext';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
-
-const MOCK_QUESTIONS: Question[] = [
-  {
-    id: 'U0001',
-    imageUrl: 'https://picsum.photos/seed/bio1/800/600',
-    field: '细胞生物学',
-    source: '猿辅导',
-    sourceDetail: '2023年全国甲卷第3题',
-    difficulty: ['难题'],
-    type: '概念题',
-    content: '下列关于细胞呼吸的叙述，错误的是（ ）\nA. 葡萄糖在细胞质基质中分解为丙酮酸\nB. 有氧呼吸产生的[H]在线粒体内膜上与氧结合生成水\nC. 只有有氧呼吸才能产生ATP\nD. 丙酮酸进入线粒体后才能被彻底氧化分解',
-    answer: 'C',
-    explanation: '无氧呼吸在第一阶段也能产生少量ATP。',
-    createdBy: 'demo',
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'U0002',
-    imageUrl: 'https://picsum.photos/seed/bio2/800/600',
-    field: '生物化学',
-    source: '北斗学友',
-    sourceDetail: '必修一《分子与细胞》P45',
-    difficulty: ['易错题'],
-    type: '计算题',
-    content: '某蛋白质由n条肽链组成，氨基酸的平均分子量为a，若该蛋白质共有m个氨基酸，则该蛋白质的分子量约为多少？',
-    answer: 'ma - 18(m-n)',
-    explanation: '蛋白质分子量 = 氨基酸总分子量 - 脱去水的总分子量。脱去水分子数 = 氨基酸数 - 肽链数。',
-    createdBy: 'demo',
-    createdAt: new Date().toISOString()
-  }
-];
 
 interface DashboardProps {
   user: User | null;
@@ -50,10 +18,10 @@ export default function Dashboard({ user }: DashboardProps) {
   const { isMobileView } = useViewMode();
   const { isNight, isBirthday, birthdaySlogan, isQidan, qidanSlogan, theme } = useTheme();
   const { t } = useLanguage();
-  const [questions, setQuestions] = useState<Question[]>(isDemoMode ? MOCK_QUESTIONS : []);
+  const [questions, setQuestions] = useState<Question[]>([]);
   const [userTags, setUserTags] = useState<Record<string, string[]>>({});
   const [allUsers, setAllUsers] = useState<User[]>([]);
-  const [loading, setLoading] = useState(!isDemoMode);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStates, setFilterStates] = useState<Record<string, 'include' | 'exclude' | 'none'>>({});
   const [activeFilterMode, setActiveFilterMode] = useState<'include' | 'exclude' | null>(null);
@@ -79,45 +47,34 @@ export default function Dashboard({ user }: DashboardProps) {
   });
 
   useEffect(() => {
-    if (isDemoMode) {
-      setLoading(false);
-      return;
-    }
+    const fetchData = async () => {
+      try {
+        const questionsData = await api.get('questions');
+        setQuestions(questionsData);
 
-    const q = query(collection(db, 'questions'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, 
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ ...doc.data(), firestoreId: doc.id } as Question));
-        setQuestions(data);
-        setLoading(false);
-      },
-      (error) => {
-        console.error("Error fetching questions:", error);
+        const usersData = await api.get('users');
+        setAllUsers(usersData);
+
+        if (user?.studentId) {
+          const tagsData = await api.get('userTags', undefined, { studentId: user.studentId });
+          const tagsMap: Record<string, string[]> = {};
+          tagsData.forEach((data: UserTag) => {
+            tagsMap[data.questionId] = data.tags;
+          });
+          setUserTags(tagsMap);
+        }
+      } catch (err) {
+        console.error("Error fetching dashboard data:", err);
+      } finally {
         setLoading(false);
       }
-    );
+    };
 
-    const usersQ = query(collection(db, 'users'));
-    const unsubscribeUsers = onSnapshot(usersQ, (snapshot) => {
-      const usersData = snapshot.docs.map(doc => doc.data() as User);
-      setAllUsers(usersData);
-    });
+    fetchData();
+    const interval = setInterval(fetchData, 45000); // Poll every 45s
 
-    if (auth.currentUser && user?.studentId) {
-      const tagsQ = query(collection(db, 'userTags'), where('studentId', '==', user.studentId));
-      const unsubscribeTags = onSnapshot(tagsQ, (snapshot) => {
-        const tagsMap: Record<string, string[]> = {};
-        snapshot.docs.forEach(doc => {
-          const data = doc.data() as UserTag;
-          tagsMap[data.questionId] = data.tags;
-        });
-        setUserTags(tagsMap);
-      });
-      return () => { unsubscribe(); unsubscribeUsers(); unsubscribeTags(); };
-    }
-
-    return () => { unsubscribe(); unsubscribeUsers(); };
-  }, []);
+    return () => clearInterval(interval);
+  }, [user?.studentId]);
 
   const allUserTags = Array.from(new Set(Object.values(userTags).flat()));
   const allPublicTags = Array.from(new Set(questions.flatMap(q => q.publicTags || [])));
@@ -208,15 +165,8 @@ export default function Dashboard({ user }: DashboardProps) {
       const q = questions.find(q => q.id === questionId);
       if (!q) return;
       const newPublicTags = Array.from(new Set([...(q.publicTags || []), tag]));
-      const docId = q.firestoreId || q.id;
       
-      if (isDemoMode) {
-        setQuestions(prev => prev.map(item => item.id === questionId ? { ...item, publicTags: newPublicTags } : item));
-        setTagInput(null);
-        return;
-      }
-      
-      await updateDoc(doc(db, 'questions', docId), { publicTags: newPublicTags });
+      await api.put('questions', q.id, { publicTags: newPublicTags });
       setTagInput(null);
       return;
     }
@@ -226,41 +176,22 @@ export default function Dashboard({ user }: DashboardProps) {
 
     const newTags = [...currentTags, tag];
 
-    if (isDemoMode) {
-      setUserTags(prev => ({ ...prev, [questionId]: newTags }));
-      setTagInput(null);
-      return;
-    }
-
     if (!user?.studentId) return;
     const tagId = `${user.studentId}_${questionId}`;
-    await setDoc(doc(db, 'userTags', tagId), {
+    await api.post('userTags', {
+      id: tagId,
       userId: user.uid,
       studentId: user.studentId,
       questionId,
       tags: newTags
     });
+    setUserTags(prev => ({ ...prev, [questionId]: newTags }));
     setTagInput(null);
   };
 
   const handleBatchTag = async () => {
     if (!batchTagInput.trim() || selectedQuestions.length === 0) return;
     const tag = batchTagInput.trim();
-
-    if (isDemoMode) {
-      setUserTags(prev => {
-        const next = { ...prev };
-        selectedQuestions.forEach(id => {
-          const current = next[id] || [];
-          if (!current.includes(tag)) {
-            next[id] = [...current, tag];
-          }
-        });
-        return next;
-      });
-      setBatchTagInput('');
-      return;
-    }
 
     if (!user?.studentId) return;
     const studentId = user.studentId;
@@ -271,7 +202,8 @@ export default function Dashboard({ user }: DashboardProps) {
         if (!currentTags.includes(tag)) {
           const newTags = [...currentTags, tag];
           const tagId = `${studentId}_${questionId}`;
-          return setDoc(doc(db, 'userTags', tagId), {
+          return api.post('userTags', {
+            id: tagId,
             userId: user.uid,
             studentId: studentId,
             questionId,
@@ -281,6 +213,14 @@ export default function Dashboard({ user }: DashboardProps) {
       });
       await Promise.all(promises);
       setBatchTagInput('');
+      
+      // Refresh user tags
+      const tagsData = await api.get('userTags', undefined, { studentId: user.studentId });
+      const tagsMap: Record<string, string[]> = {};
+      tagsData.forEach((data: UserTag) => {
+        tagsMap[data.questionId] = data.tags;
+      });
+      setUserTags(tagsMap);
     } catch (err) {
       console.error("Error batch tagging:", err);
     }
@@ -329,46 +269,30 @@ export default function Dashboard({ user }: DashboardProps) {
       const q = questions.find(q => q.id === questionId);
       if (!q) return;
       const newPublicTags = (q.publicTags || []).filter(t => t !== tagToRemove);
-      const docId = q.firestoreId || q.id;
       
-      if (isDemoMode) {
-        setQuestions(prev => prev.map(item => item.id === questionId ? { ...item, publicTags: newPublicTags } : item));
-        return;
-      }
-      
-      await updateDoc(doc(db, 'questions', docId), { publicTags: newPublicTags });
+      await api.put('questions', q.id, { publicTags: newPublicTags });
       return;
     }
 
     const currentTags = userTags[questionId] || [];
     const newTags = currentTags.filter(t => t !== tagToRemove);
 
-    if (isDemoMode) {
-      setUserTags(prev => ({ ...prev, [questionId]: newTags }));
-      return;
-    }
-
     if (!user?.studentId) return;
     const tagId = `${user.studentId}_${questionId}`;
-    await setDoc(doc(db, 'userTags', tagId), {
+    await api.post('userTags', {
+      id: tagId,
       userId: user.uid,
       studentId: user.studentId,
       questionId,
       tags: newTags
     });
+    setUserTags(prev => ({ ...prev, [questionId]: newTags }));
   };
 
   const handleDelete = async (id: string) => {
     try {
-      if (isDemoMode) {
-        setQuestions(prev => prev.filter(q => q.id !== id));
-        setConfirmDeleteId(null);
-        return;
-      }
-      
-      const q = questions.find(item => item.id === id);
-      const docId = q?.firestoreId || id;
-      await deleteDoc(doc(db, 'questions', docId));
+      await api.delete('questions', id);
+      setQuestions(prev => prev.filter(q => q.id !== id));
       setConfirmDeleteId(null);
     } catch (err) {
       console.error(err);
@@ -380,7 +304,7 @@ export default function Dashboard({ user }: DashboardProps) {
       {/* Dynamic Island Selection Indicator - Sticky to bottom */}
       <AnimatePresence>
         {selectedQuestions.length > 0 && (
-          <div className="fixed bottom-8 left-0 right-0 z-[100] flex justify-center pointer-events-none">
+          <div className="fixed bottom-8 left-[var(--sidebar-width,0px)] right-0 z-[100] flex justify-center pointer-events-none transition-all duration-300">
             <motion.div
               layout
               initial={{ y: 100, opacity: 0, scale: 0.8 }}
@@ -535,7 +459,6 @@ export default function Dashboard({ user }: DashboardProps) {
                         e.stopPropagation();
                         if (!user?.studentId || selectedQuestions.length === 0) return;
                         try {
-                          const batch = writeBatch(db);
                           let addedCount = 0;
                           
                           for (const qId of selectedQuestions) {
@@ -548,17 +471,13 @@ export default function Dashboard({ user }: DashboardProps) {
                             );
                             
                             for (const kp of uniqueKps) {
-                              const qry = query(
-                                collection(db, 'knowledgePoints'),
-                                where('studentId', '==', user.studentId),
-                                where('title', '==', kp.title)
-                              );
-                              const snapshot = await getDocs(qry);
+                              const duplicates = await api.get('knowledgePoints', undefined, {
+                                studentId: user.studentId,
+                                title: kp.title
+                              });
                               
-                              if (snapshot.empty) {
-                                const newKpRef = doc(collection(db, 'knowledgePoints'));
-                                batch.set(newKpRef, {
-                                  id: newKpRef.id,
+                              if (duplicates.length === 0) {
+                                await api.post('knowledgePoints', {
                                   questionId: q.id,
                                   field: Array.isArray(q.field) ? q.field[0] : q.field,
                                   title: kp.title,
@@ -575,7 +494,6 @@ export default function Dashboard({ user }: DashboardProps) {
                           }
                           
                           if (addedCount > 0) {
-                            await batch.commit();
                             alert(t('common.success'));
                           } else {
                             alert(t('common.none'));
@@ -695,7 +613,7 @@ export default function Dashboard({ user }: DashboardProps) {
           ${theme.mainBg || 'bg-white/40'} backdrop-blur-2xl p-6 md:p-8 rounded-[2.5rem] md:rounded-[3rem] border ${theme.border} space-y-6 md:space-y-8 sticky z-30 transition-all duration-1000 shadow-none
           ${isMobileView ? '-mx-4 rounded-none border-x-0' : ''}
         `}
-        style={{ top: isMobileView ? '-16px' : '-32px' }}
+        style={{ top: isMobileView ? '0px' : '-32px' }}
       >
         <div className="flex flex-col md:flex-row gap-4 items-center">
           <div className="relative flex-1 w-full group">

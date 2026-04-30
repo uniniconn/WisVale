@@ -1,49 +1,71 @@
 import { useState, useEffect } from 'react';
 import { useTimePeriod } from './useTimePeriod';
-import { db } from '../firebase';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
 import { BirthdaySettings } from '../types';
+import { THEMES, Theme } from '../constants/themes';
 
 export function useTheme() {
   const timePeriod = useTimePeriod();
   const isNight = timePeriod === 'night';
+  const { user } = useAuth();
   const [isBirthday, setIsBirthday] = useState(false);
   const [birthdaySlogan, setBirthdaySlogan] = useState('生日快乐！');
   const [isQidan, setIsQidan] = useState(false);
   const [qidanSlogan, setQidanSlogan] = useState('紫海猖狂，七单为王');
+  const [isArtMode, setIsArtMode] = useState(false);
+  const [customBgUrl, setCustomBgUrl] = useState<string | null>(null);
+  const [bgBlur, setBgBlur] = useState(0);
 
   useEffect(() => {
-    const unsubscribeBirthday = onSnapshot(doc(db, 'settings', 'birthday'), (snapshot) => {
-      if (snapshot.exists()) {
-        const settings = snapshot.data() as BirthdaySettings;
-        setIsBirthday(settings.isEnabled);
-        setBirthdaySlogan(settings.slogan || '生日快乐！');
-      } else {
-        setIsBirthday(false);
-        setBirthdaySlogan('生日快乐！');
-      }
-    });
+    const fetchData = async () => {
+      try {
+        // Birthday Settings
+        const birthday = await api.get('settings', 'birthday');
+        if (birthday) {
+          setIsBirthday(birthday.isEnabled);
+          setBirthdaySlogan(birthday.slogan || '生日快乐！');
+        }
 
-    const unsubscribeQidan = onSnapshot(doc(db, 'settings', 'qidan'), (snapshot) => {
-      if (snapshot.exists()) {
-        const settings = snapshot.data() as BirthdaySettings; // Reusing type for simplicity
-        setIsQidan(settings.isEnabled);
-        setQidanSlogan(settings.slogan || '紫海猖狂，七单为王');
-      } else {
-        setIsQidan(false);
-        setQidanSlogan('紫海猖狂，七单为王');
-      }
-    });
+        // Qidan Settings
+        const qidan = await api.get('settings', 'qidan');
+        if (qidan) {
+          setIsQidan(qidan.isEnabled);
+          setQidanSlogan(qidan.slogan || '紫海猖狂，七单为王');
+        }
 
-    return () => {
-      unsubscribeBirthday();
-      unsubscribeQidan();
+        // Art Settings
+        const art = await api.get('settings', 'art');
+        if (art) {
+          setIsArtMode(art.isEnabled);
+        }
+
+        // User Custom Background
+        if (user?.uid) {
+          const userData = await api.get('users', user.uid);
+          setCustomBgUrl(userData.customBgUrl || null);
+          setBgBlur(userData.bgBlur || 0);
+        } else {
+          setCustomBgUrl(null);
+          setBgBlur(0);
+        }
+      } catch (err) {
+        console.error("Error fetching theme data:", err);
+      }
     };
-  }, []);
+
+    fetchData();
+    const interval = setInterval(fetchData, 120000); // Poll every 120s
+    return () => clearInterval(interval);
+  }, [user?.uid]);
+
+  const themeKey = isQidan ? 'qidan' : (isBirthday ? 'birthday' : (isNight ? 'night' : 'day'));
+  const activeTheme: Theme = THEMES[themeKey];
 
   const getBgGradient = () => {
     if (isQidan) return 'from-purple-300 via-fuchsia-100 to-violet-200';
     if (isBirthday) return 'from-pink-300 via-rose-100 to-purple-200';
+    if (customBgUrl) return 'bg-transparent';
     switch (timePeriod) {
       case 'morning': return 'from-orange-200 via-rose-100 to-amber-200';
       case 'day': return 'from-sky-300 via-white to-blue-200';
@@ -53,61 +75,7 @@ export function useTheme() {
     }
   };
 
-  const theme = {
-    text: isNight ? 'text-slate-100' : 'text-slate-900',
-    subText: isNight ? 'text-slate-400' : 'text-slate-500',
-    border: isNight ? 'border-slate-800/50' : 'border-slate-200/50',
-    card: isNight ? 'bg-slate-900/40 border-slate-800/50 text-slate-100' : 'bg-white/40 border-slate-200/50 text-slate-900',
-    innerCard: isNight ? 'bg-slate-900/30 border-slate-800/50' : 'bg-white/30 border-slate-100',
-    mutedBg: isNight ? 'bg-slate-900/30' : 'bg-slate-50/30',
-    input: isNight ? 'bg-slate-800/30 border-slate-700 text-slate-100 placeholder-slate-500' : 'bg-white/30 border-slate-200 text-slate-900 placeholder-slate-400',
-    buttonSecondary: isNight ? 'bg-slate-800/50 text-slate-300 hover:bg-slate-700/50' : 'bg-slate-100/50 text-slate-600 hover:bg-slate-200/50',
-    sidebar: isNight ? 'bg-slate-950/60 border-slate-800/50' : 'bg-white/60 border-slate-200/50',
-    navItem: isNight ? 'text-slate-400 hover:bg-slate-900/40 hover:text-slate-100' : 'text-slate-500 hover:bg-slate-50/40 hover:text-slate-900',
-    navIcon: isNight ? 'text-slate-500 group-hover:text-slate-300' : 'text-slate-400 group-hover:text-slate-600',
-    header: isNight ? 'bg-slate-950/50 border-slate-800/50' : 'bg-white/50 border-slate-200/50',
-    mainBg: isNight ? 'bg-slate-950/30' : 'bg-white/30',
-  };
-
-  const getBirthdayTheme = () => {
-    return {
-      ...theme,
-      text: 'text-rose-900',
-      subText: 'text-rose-600',
-      border: 'border-rose-200/50',
-      card: 'bg-white/60 border-rose-200/50 text-rose-900',
-      innerCard: 'bg-rose-50/50 border-rose-100',
-      mutedBg: 'bg-rose-50/30',
-      input: 'bg-white/50 border-rose-200 text-rose-900 placeholder-rose-300',
-      buttonSecondary: 'bg-rose-100/50 text-rose-600 hover:bg-rose-200/50',
-      sidebar: 'bg-white/80 border-rose-200/50',
-      navItem: 'text-rose-600 hover:bg-rose-50 hover:text-rose-900',
-      navIcon: 'text-rose-400 group-hover:text-rose-600',
-      header: 'bg-white/70 border-rose-200/50',
-      mainBg: 'bg-white/40',
-    };
-  };
-
-  const getQidanTheme = () => {
-    return {
-      ...theme,
-      text: 'text-purple-900',
-      subText: 'text-purple-600',
-      border: 'border-purple-200/50',
-      card: 'bg-white/60 border-purple-200/50 text-purple-900',
-      innerCard: 'bg-purple-50/50 border-purple-100',
-      mutedBg: 'bg-purple-50/30',
-      input: 'bg-white/50 border-purple-200 text-purple-900 placeholder-purple-300',
-      buttonSecondary: 'bg-purple-100/50 text-purple-600 hover:bg-purple-200/50',
-      sidebar: 'bg-white/80 border-purple-200/50',
-      navItem: 'text-purple-600 hover:bg-purple-50 hover:text-purple-900',
-      navIcon: 'text-purple-400 group-hover:text-purple-600',
-      header: 'bg-white/70 border-purple-200/50',
-      mainBg: 'bg-white/40',
-    };
-  };
-
-  const activeTheme = isQidan ? getQidanTheme() : (isBirthday ? getBirthdayTheme() : theme);
+  const getBgImage = () => customBgUrl;
 
   return {
     timePeriod,
@@ -116,7 +84,11 @@ export function useTheme() {
     birthdaySlogan,
     isQidan,
     qidanSlogan,
+    isArtMode,
+    customBgUrl,
+    bgBlur,
     getBgGradient,
+    getBgImage,
     theme: activeTheme
   };
 }

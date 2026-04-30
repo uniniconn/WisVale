@@ -64,3 +64,8 @@ export interface BirthdaySettings {
   slogan: string;
   isEnabled: boolean;
 }
+
+export interface UserBackgroundSettings {
+  customBgUrl: string | null;
+  bgBlur: number;
+}

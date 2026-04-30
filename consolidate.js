@@ -32,7 +32,13 @@ const formatObj = (obj) => {
   const keys = Object.keys(obj).sort();
   let str = '{\n';
   keys.forEach(key => {
-    str += `      '${key}': '${obj[key].replace(/'/g, "\\'")}',\n`;
+    // Escape single quotes and backslashes, and handle newlines
+    const escapedValue = obj[key]
+      .replace(/\\/g, "\\\\")
+      .replace(/'/g, "\\'")
+      .replace(/\n/g, "\\n")
+      .replace(/\r/g, "\\r");
+    str += `      '${key}': '${escapedValue}',\n`;
   });
   str += '    }';
   return str;

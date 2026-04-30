@@ -1,30 +1,19 @@
-export async function extractTextFromImage(base64Image: string): Promise<string> {
-  try {
-    const response = await fetch("/api/ocr", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ base64Image }),
-    });
+// Re-enabled server-side OCR via OCR.space for better accuracy as per latest user request
+export async function performOCR(base64Image: string) {
+  const response = await fetch("/api/ocr/parse", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ base64Image }),
+  });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OCR Proxy returned ${response.status}: ${errorText}`);
-    }
-
-    const result = await response.json();
-
-    if (result.IsErroredOnProcessing) {
-      throw new Error(result.ErrorMessage?.[0] || "OCR processing failed");
-    }
-
-    const parsedText = result.ParsedResults?.[0]?.ParsedText || "";
-    return parsedText.trim();
-  } catch (error) {
-    console.error("OCR Service Error:", error);
-    throw error;
+  if (!response.ok) {
+    const errorData = (await response.json().catch(() => ({}))) as any;
+    throw new Error(errorData.error || errorData.details || "OCR Service error");
   }
+
+  return (await response.json()) as any;
 }
 
 export async function processQuestionWithAI(ocrText: string, explanationText?: string) {
@@ -37,10 +26,11 @@ export async function processQuestionWithAI(ocrText: string, explanationText?: s
   });
 
   if (!response.ok) {
-    throw new Error("AI Proxy error");
+    const errorData = (await response.json().catch(() => ({}))) as any;
+    throw new Error(errorData.error || errorData.details || errorData.exception || "AI Proxy error (process-question)");
   }
 
-  return await response.json();
+  return (await response.json()) as any;
 }
 
 export async function generateSingleKpWithAI(content: string, existingKps: any[]) {
@@ -53,10 +43,11 @@ export async function generateSingleKpWithAI(content: string, existingKps: any[]
   });
 
   if (!response.ok) {
-    throw new Error("AI Proxy error");
+    const errorData = (await response.json().catch(() => ({}))) as any;
+    throw new Error(errorData.error || errorData.details || errorData.exception || "AI Proxy error (generate-single-kp)");
   }
 
-  return await response.json();
+  return (await response.json()) as any;
 }
 
 export async function generateKnowledgeSummaryWithAI(kps: any[]) {
@@ -69,10 +60,11 @@ export async function generateKnowledgeSummaryWithAI(kps: any[]) {
   });
 
   if (!response.ok) {
-    throw new Error("AI Proxy error");
+    const errorData = (await response.json().catch(() => ({}))) as any;
+    throw new Error(errorData.error || errorData.details || errorData.exception || "AI Proxy error (knowledge-summary)");
   }
 
-  return await response.json();
+  return (await response.json()) as any;
 }
 
 export async function evaluateAnswerWithAI(title: string, content: string, answer: string) {
@@ -85,8 +77,9 @@ export async function evaluateAnswerWithAI(title: string, content: string, answe
   });
 
   if (!response.ok) {
-    throw new Error("AI Proxy error");
+    const errorData = (await response.json().catch(() => ({}))) as any;
+    throw new Error(errorData.error || errorData.details || errorData.exception || "AI Proxy error (evaluate-answer)");
   }
 
-  return await response.json();
+  return (await response.json()) as any;
 }
